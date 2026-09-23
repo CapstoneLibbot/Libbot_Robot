@@ -1,0 +1,3 @@
+# Python dependencies for libot_pi
+# This scaffold uses the Python standard library by default.
+# Add project-specific integrations here when they are required.

@@ -1,0 +1,34 @@
+{
+  "tcp": {
+    "host": "0.0.0.0",
+    "port": 9000,
+    "buffer_size": 4096,
+    "timeout": 5
+  },
+  "robot": {
+    "name": "libot_pi",
+    "max_speed": 1.0,
+    "safe_mode": true
+  },
+  "hardware": {
+    "navigation": {
+      "enabled": true,
+      "driver": "ros"
+    },
+    "scanner": {
+      "enabled": true,
+      "device": "camera"
+    },
+    "ui": {
+      "enabled": true,
+      "screen": "lcd"
+    },
+    "speaker": {
+      "enabled": true,
+      "volume": 70
+    }
+  },
+  "workflow": {
+    "steps": []
+  }
+}
