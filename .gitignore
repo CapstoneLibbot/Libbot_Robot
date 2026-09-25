@@ -1,0 +1,77 @@
+# ================================
+# ROS 2 / Colcon
+# ================================
+
+# Colcon build outputs
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# ROS 2 generated files
+**/.colcon/
+**/COLCON_IGNORE
+
+# ================================
+# Python
+# ================================
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python packaging
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# ================================
+# IDE / Editor
+# ================================
+
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ================================
+# OS
+# ================================
+
+.DS_Store
+Thumbs.db
+
+# ================================
+# ROS / Robot temporary files
+# ================================
+
+*.bag
+*.db3
+*.sqlite
+*.sqlite3
+
+# ROS logs
+*.log
+
+# ================================
+# Maps / generated runtime data
+# ================================
+
+# Uncomment if these are generated files
+# ros2_ws/maps/
+# ros2_ws/config/generated/
+
+# ================================
+# Environment / secrets
+# ================================
+
+.env
+.env.*
+!.env.example
