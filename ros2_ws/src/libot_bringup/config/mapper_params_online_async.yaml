@@ -1,0 +1,41 @@
+slam_toolbox:
+  ros__parameters:
+    # Frame setup for a 2D indoor mobile robot based on the LiBot URDF.
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_footprint
+    scan_topic: /scan
+
+    # Mapping mode for SLAM Toolbox: we are creating the map, not localizing against it.
+    mode: mapping
+
+    # General tuning for a 2-wheel robot in indoor space.
+    use_sim_time: false
+    debug_logging: false
+    throttle_scans: 1
+    transform_publish_period: 0.02
+    map_update_interval: 5.0
+    resolution: 0.05
+    max_laser_range: 12.0
+    minimum_travel_distance: 0.10
+    minimum_travel_heading: 0.10
+
+    # Scan matching and map update tuning.
+    scan_buffer_size: 10
+    scan_buffer_maximum: 100
+    use_scan_matching: true
+    use_scan_barycenter: true
+    do_loop_closing: true
+
+    # Loop closure tuning.
+    loop_match_minimum_chain_size: 10
+    loop_match_maximum_variance_coarse: 3.0
+    loop_match_minimum_response_coarse: 0.35
+    loop_match_minimum_response_fine: 0.45
+    loop_search_maximum_distance: 3.0
+
+    # Good default values for a compact indoor robot with a 2D lidar.
+    link_match_minimum_response_fine: 0.1
+    link_scan_maximum: 10
+    minimum_travel_distance: 0.10
+    minimum_travel_heading: 0.10

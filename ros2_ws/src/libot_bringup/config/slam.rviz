@@ -1,0 +1,31 @@
+Panels:
+  - Class: rviz_common/Displays
+  - Class: rviz_common/Views
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Name: "Map"
+      Enabled: true
+      Topic:
+        Topic: "/map"
+      Type: "rviz_default_plugins/Map"
+    - Name: "LaserScan"
+      Enabled: true
+      Topic:
+        Topic: "/scan"
+      Type: "rviz_default_plugins/LaserScan"
+    - Name: "RobotModel"
+      Enabled: true
+      Description Source: "File"
+      Robot Description: "/robot_description"
+      Type: "rviz_default_plugins/RobotModel"
+    - Name: "TF"
+      Enabled: true
+      Type: "rviz_default_plugins/TF"
+  Global Options:
+    Fixed Frame: "map"
+  Tools:
+    - Class: "rviz_default_plugins/Interact"
+    - Class: "rviz_default_plugins/MoveCamera"
+    - Class: "rviz_default_plugins/Select"
+    - Class: "rviz_default_plugins/FocusCamera"
