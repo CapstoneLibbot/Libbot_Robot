@@ -30,13 +30,13 @@ def generate_launch_description():
 
     serial_port_arg = DeclareLaunchArgument(
         'serial_port',
-        default_value='/dev/ttyUSB0', # check xem STM32 la cong nao, neu dung STM32F103C8T6 thi mac dinh la /dev/ttyUSB0
+        default_value='/dev/serial0', # check xem STM32 la cong nao, neu dung STM32F103C8T6 thi mac dinh la /dev/ttyUSB0
         description='STM32 serial port (for motor control and odometry).'
     )
 
     lidar_port_arg = DeclareLaunchArgument(
         'lidar_port',
-        default_value='/dev/ttyUSB0', # check xem lidar la cong nao, neu dung RPLIDAR thi mac dinh la /dev/ttyUSB0
+        default_value='/dev/rplidar', # check xem lidar la cong nao, neu dung RPLIDAR thi mac dinh la /dev/ttyUSB0
         description='Lidar serial port. For RPLIDAR this is usually /dev/ttyUSB0.'
     )
 
@@ -68,9 +68,9 @@ def generate_launch_description():
     )
 
     lidar_node = Node(
-        package='rplidar_ros',
-        executable='rplidar_node',
-        name='rplidar_node',
+        package='sllidar_ros2',
+        executable='sllidar_node',
+        name='sllidar_ros2',
         output='screen',
         parameters=[{
             'serial_port': LaunchConfiguration('lidar_port'),
