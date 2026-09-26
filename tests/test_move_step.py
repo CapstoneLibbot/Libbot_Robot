@@ -28,7 +28,6 @@ def test_move_step_fails_when_target_is_missing():
     context.set("current_pose", {"x": 0.0, "y": 0.0, "theta": 0.0})
 
     step = MoveStep({
-        "endpoint_id": "SHELF_A3",
         "speed_mode": "NORMAL",
         "obstacle_policy": "WAIT_RESUME",
     })

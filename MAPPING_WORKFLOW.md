@@ -212,9 +212,9 @@ Nếu `/odom` không có dữ liệu hoặc sai, SLAM sẽ rất khó map đúng
 ## 9. Workflow lưu map
 
 Sau khi hoàn thành phần vẽ map:
-
+#lưu map
 ```bash
-ros2 run nav2_map_server map_saver_cli -f /ros2_ws/src/libot_bringup/maps/libot_map
+ros2 run nav2_map_server map_saver_cli -f /ros2_ws/src/libot_bringup/maps/libot_map 
 ```
 
 Lệnh này sẽ sinh ra:
