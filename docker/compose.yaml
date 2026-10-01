@@ -14,21 +14,21 @@ services:
 
     devices:
       - "/dev/rplidar:/dev/rplidar"
-      - "/dev/serial0:/dev/serial0" # uart stm32
+      - "/dev/serial0:/dev/serial0"
 
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /home/admin/.Xauthority:/root/.Xauthority:rw
       - ../ros2_ws/src:/ros2_ws/src
       - ../maps:/ros2_ws/maps
       - ../logs:/ros2_ws/logs
 
     environment:
-        DISPLAY: "${DISPLAY}"
-        QT_X11_NO_MITSHM: "1"
-        ROS_DOMAIN_ID: "0"
+      DISPLAY: ":0"
+      XAUTHORITY: "/root/.Xauthority"
+      QT_X11_NO_MITSHM: "1"
+      ROS_DOMAIN_ID: "0"
 
-    # command:
-    #   - bash
     command:
       - tail
       - -f
