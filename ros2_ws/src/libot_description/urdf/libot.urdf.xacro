@@ -1,21 +1,11 @@
 <?xml version="1.0"?>
 
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro"
-       name="libot">
-
-    <xacro:property name="robot_length" value="0.30"/>
-    <xacro:property name="robot_width" value="0.24"/>
-    <xacro:property name="robot_height" value="0.20"/>
+       name="libbot">
 
     <link name="base_footprint"/>
 
-    <link name="base_link">
-        <visual>
-            <geometry>
-                <box size="${robot_length} ${robot_width} ${robot_height}"/>
-            </geometry>
-        </visual>
-    </link>
+    <link name="base_link"/>
 
     <joint name="base_footprint_to_base_link"
            type="fixed">
@@ -28,15 +18,19 @@
 
     </joint>
 
+
     <link name="laser"/>
 
-    <joint name="laser_joint"
+    <joint name="base_link_to_laser"
            type="fixed">
 
         <parent link="base_link"/>
         <child link="laser"/>
 
-        <origin xyz="0 0 0.20"
+        <!-- TEMPORARY -->
+        <!-- Sau này đo chính xác vị trí LiDAR -->
+
+        <origin xyz="0 0 0.25"
                 rpy="0 0 0"/>
 
     </joint>
