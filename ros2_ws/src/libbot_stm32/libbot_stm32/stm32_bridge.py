@@ -25,6 +25,21 @@ class STM32Bridge(Node):
 
     ENCODER_CPR = 1980.0
 
+    # =========================================================
+    # ENCODER DIRECTION
+    # =========================================================
+
+    # Robot layout:
+    # M1 = Front Right
+    # M2 = Front Left
+    # M3 = Rear Right
+    # M4 = Rear Left
+
+    M1_SIGN = 1
+    M2_SIGN = -1
+    M3_SIGN = 1
+    M4_SIGN = -1
+
     # Distance between left/right wheel centers = 0.30 m
     # Distance between front/rear wheel centers = 0.30 m
     #
@@ -212,14 +227,18 @@ class STM32Bridge(Node):
             f'VEL,{vx_mm},{vy_mm},{wz_mrad}\n'
         )
 
-        try:
+        self.get_logger().info(
+            f'SEND STM32: {command.strip()}'
+        )
 
+        try:
             self.serial.write(
                 command.encode()
             )
 
-        except Exception as e:
+            self.serial.flush()
 
+        except Exception as e:
             self.get_logger().error(
                 f'UART write error: {e}'
             )
@@ -328,6 +347,23 @@ class STM32Bridge(Node):
             d4 = m4 - self.last_enc[3]
 
             self.last_enc = current_enc
+
+            # =========================================================
+            # NORMALIZE ENCODER DIRECTION
+            # =========================================================
+
+            d1 *= self.M1_SIGN
+            d2 *= self.M2_SIGN
+            d3 *= self.M3_SIGN
+            d4 *= self.M4_SIGN
+
+            # self.get_logger().info(
+            #     f'ENC NORMALIZED: '
+            #     f'M1(FR)={d1}, '
+            #     f'M2(FL)={d2}, '
+            #     f'M3(RR)={d3}, '
+            #     f'M4(RL)={d4}'
+            # )
 
             # -------------------------------------------------
             # COUNTS -> WHEEL DISTANCE
@@ -438,14 +474,8 @@ class STM32Bridge(Node):
         # -----------------------------------------------------
         # YAW -> QUATERNION
         # -----------------------------------------------------
-
-        qz = math.sin(
-            self.theta / 2.0
-        )
-
-        qw = math.cos(
-            self.theta / 2.0
-        )
+        qz = math.sin(self.theta / 2.0)
+        qw = math.cos(self.theta / 2.0)
 
         odom.pose.pose.orientation.x = 0.0
         odom.pose.pose.orientation.y = 0.0

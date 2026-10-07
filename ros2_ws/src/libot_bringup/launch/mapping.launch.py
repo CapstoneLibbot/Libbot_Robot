@@ -58,18 +58,17 @@ def generate_launch_description():
             executable='static_transform_publisher',
             name='base_link_to_laser',
             arguments=[
-                '0',
-                '0',
-                '0.25',
-                '0',
-                '0',
-                '0',
-                'base_link',
-                'laser'
+                '--x', '-0.13',
+                '--y', '-0.01',
+                '--z', '0.22',
+                '--yaw', '1.5708',
+                '--pitch', '0',
+                '--roll', '0',
+                '--frame-id', 'base_link',
+                '--child-frame-id', 'laser'
             ],
             output='screen',
         ),
-
         # =========================
         # SLAM Toolbox
         # Delay a little so LiDAR + STM32 start first
