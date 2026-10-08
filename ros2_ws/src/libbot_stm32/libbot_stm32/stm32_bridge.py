@@ -1,575 +1,336 @@
-#!/usr/bin/env python3
 
 import math
-import serial
+import time
 
+import serial
 import rclpy
 from rclpy.node import Node
-
 from geometry_msgs.msg import Twist, TransformStamped
 from nav_msgs.msg import Odometry
-
+from sensor_msgs.msg import BatteryState
 from tf2_ros import TransformBroadcaster
 
 
 class STM32Bridge(Node):
-
-    # =========================================================
-    # ROBOT PARAMETERS
-    # =========================================================
-
-    WHEEL_DIAMETER = 0.060       # meter
-    WHEEL_RADIUS = 0.030        # meter
-
+    # Physical dimensions (meters), center-to-center measurements
+    WHEEL_DIAMETER = 0.06
     WHEEL_CIRCUMFERENCE = math.pi * WHEEL_DIAMETER
+    ENCODER_CPR = 1980.0  # Check actual counts per wheel revolution
+    WHEEL_BASE = 0.27     # front to rear wheel centers
+    TRACK_WIDTH = 0.33    # left to right wheel centers
+    L = WHEEL_BASE / 2.0
+    W = TRACK_WIDTH / 2.0
+    L_PLUS_W = L + W
 
-    ENCODER_CPR = 1980.0
-
-    # =========================================================
-    # ENCODER DIRECTION
-    # =========================================================
-
-    # Robot layout:
-    # M1 = Front Right
-    # M2 = Front Left
-    # M3 = Rear Right
-    # M4 = Rear Left
-
+    # ENC packet wheel order: FR, FL, RR, RL
+    # Preserve existing tested wiring signs until verified physically.
     M1_SIGN = 1
     M2_SIGN = -1
     M3_SIGN = 1
     M4_SIGN = -1
 
-    # Distance between left/right wheel centers = 0.30 m
-    # Distance between front/rear wheel centers = 0.30 m
-    #
-    # For mecanum kinematic model:
-    # L = half front/rear distance
-    # W = half left/right distance
-
-    L = 0.15
-    W = 0.15
-
-    L_PLUS_W = L + W
-
-    # =========================================================
-    # INIT
-    # =========================================================
+    ENCODER_TIMEOUT_SEC = 0.30
+    CMD_TIMEOUT_SEC = 0.50  # Safety stop command; STM32 needs its own watchdog
+    MAX_RX_BYTES = 8192
+    MAX_LINE_BYTES = 256
 
     def __init__(self):
-
         super().__init__('stm32_bridge')
+        self.declare_parameter('port', '/dev/serial0')
+        self.declare_parameter('baudrate', 115200)
+        self.port = str(self.get_parameter('port').value)
+        self.baudrate = int(self.get_parameter('baudrate').value)
 
-        # -----------------------------------------------------
-        # PARAMETERS
-        # -----------------------------------------------------
+        self.serial = serial.Serial(self.port, self.baudrate, timeout=0, write_timeout=0.1)
+        self.get_logger().info(f'Connected to STM32: {self.port} @ {self.baudrate}')
 
-        self.declare_parameter(
-            'port',
-            '/dev/serial0'
-        )
-
-        self.declare_parameter(
-            'baudrate',
-            115200
-        )
-
-        self.port = self.get_parameter(
-            'port'
-        ).value
-
-        self.baudrate = self.get_parameter(
-            'baudrate'
-        ).value
-
-        # -----------------------------------------------------
-        # SERIAL
-        # -----------------------------------------------------
-
-        try:
-
-            self.serial = serial.Serial(
-                self.port,
-                self.baudrate,
-                timeout=0.01
-            )
-
-            self.get_logger().info(
-                f'Connected to STM32: {self.port}'
-            )
-
-        except Exception as e:
-
-            self.get_logger().error(
-                f'Cannot open STM32 serial: {e}'
-            )
-
-            raise
-
-        # -----------------------------------------------------
-        # CMD_VEL
-        # -----------------------------------------------------
-
-        self.cmd_vel_sub = self.create_subscription(
-            Twist,
-            '/cmd_vel',
-            self.cmd_vel_callback,
-            10
-        )
-
-        # -----------------------------------------------------
-        # ODOM
-        # -----------------------------------------------------
-
-        self.odom_pub = self.create_publisher(
-            Odometry,
-            '/odom',
-            20
-        )
-
-        # -----------------------------------------------------
-        # TF
-        # -----------------------------------------------------
-
-        self.tf_broadcaster = TransformBroadcaster(
-            self
-        )
-
-        # -----------------------------------------------------
-        # ROBOT POSE
-        # -----------------------------------------------------
+        self.cmd_vel_sub = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
+        self.odom_pub = self.create_publisher(Odometry, '/odom', 20)
+        self.battery_pub = self.create_publisher(BatteryState, '/battery_state', 10)
+        self.tf_broadcaster = TransformBroadcaster(self)
 
         self.x = 0.0
         self.y = 0.0
         self.theta = 0.0
-
-        # -----------------------------------------------------
-        # ENCODER STATE
-        # -----------------------------------------------------
-
         self.last_enc = None
+        self.last_encoder_monotonic = None
+        self.last_encoder_receive_monotonic = None
+        self.odom_vx = 0.0
+        self.odom_vy = 0.0
+        self.odom_wz = 0.0
+        self.battery_voltage = float('nan')
+        self.battery_percentage = float('nan')
 
-        # -----------------------------------------------------
-        # VELOCITY
-        # -----------------------------------------------------
+        self.last_cmd_monotonic = time.monotonic()
+        self.command_is_active = False
+        self.rx_buffer = bytearray()
+        self.last_encoder_timeout_logged = False
+        self.last_serial_error_logged = 0.0
 
-        self.vx = 0.0
-        self.vy = 0.0
-        self.wz = 0.0
-
-        # -----------------------------------------------------
-        # TIMING
-        # -----------------------------------------------------
-
-        self.last_time = self.get_clock().now()
-
-        # -----------------------------------------------------
-        # SERIAL TIMER
-        # -----------------------------------------------------
-
-        self.serial_timer = self.create_timer(
-            0.005,
-            self.serial_callback
-        )
-
-        # -----------------------------------------------------
-        # ODOM TIMER
-        # -----------------------------------------------------
-
-        self.odom_timer = self.create_timer(
-            0.02,
-            self.publish_odom
-        )
+        self.serial_timer = self.create_timer(0.005, self.serial_callback)
+        self.odom_timer = self.create_timer(0.02, self.publish_odom)
+        self.cmd_watchdog_timer = self.create_timer(0.1, self.command_watchdog)
 
         self.get_logger().info(
-            'STM32 bridge started'
+            f'STM32 bridge started: wheel={self.WHEEL_DIAMETER:.3f}m, '
+            f'CPR={self.ENCODER_CPR:.0f}, wheelbase={self.WHEEL_BASE:.3f}m, '
+            f'track={self.TRACK_WIDTH:.3f}m, L+W={self.L_PLUS_W:.3f}m'
         )
 
-        self.get_logger().info(
-            f'Wheel diameter: {self.WHEEL_DIAMETER} m'
+    def send_velocity(self, vx, vy, wz):
+
+        cmd = (
+            f'VEL,{int(vx * 1000.0)},'
+            f'{int(vy * 1000.0)},'
+            f'{int(wz * 1000.0)}\n'
         )
 
-        self.get_logger().info(
-            f'Encoder CPR: {self.ENCODER_CPR}'
-        )
+        try:
+            data = cmd.encode('ascii')
+            written = self.serial.write(data)
 
-        self.get_logger().info(
-            f'L+W: {self.L_PLUS_W} m'
-        )
+            self.get_logger().info(
+                f'TX UART: {cmd.strip()} | '
+                f'written={written}/{len(data)}'
+            )
 
-    # =========================================================
-    # CMD_VEL
-    # =========================================================
+        except (serial.SerialException, OSError) as exc:
+            self.get_logger().error(f'UART error: {exc}')
 
     def cmd_vel_callback(self, msg):
+        vx, vy, wz = float(msg.linear.x), float(msg.linear.y), float(msg.angular.z)
+        if not all(math.isfinite(v) for v in (vx, vy, wz)):
+            self.get_logger().warning('Ignoring non-finite /cmd_vel')
+            return
+        self.last_cmd_monotonic = time.monotonic()
+        self.command_is_active = any(abs(v) > 1e-6 for v in (vx, vy, wz))
+        self.send_velocity(vx, vy, wz)
 
-        self.vx = msg.linear.x
-        self.vy = msg.linear.y
-        self.wz = msg.angular.z
-
-        # ROS units:
-        #
-        # vx = m/s
-        # vy = m/s
-        # wz = rad/s
-        #
-        # STM32 protocol:
-        #
-        # vx = mm/s
-        # vy = mm/s
-        # wz = mrad/s
-
-        vx_mm = int(self.vx * 1000.0)
-        vy_mm = int(self.vy * 1000.0)
-        wz_mrad = int(self.wz * 1000.0)
-
-        command = (
-            f'VEL,{vx_mm},{vy_mm},{wz_mrad}\n'
-        )
-
-        self.get_logger().info(
-            f'SEND STM32: {command.strip()}'
-        )
-
-        try:
-            self.serial.write(
-                command.encode()
-            )
-
-            self.serial.flush()
-
-        except Exception as e:
-            self.get_logger().error(
-                f'UART write error: {e}'
-            )
-
-    # =========================================================
-    # SERIAL
-    # =========================================================
+    def command_watchdog(self):
+        if self.command_is_active and (time.monotonic() - self.last_cmd_monotonic) > self.CMD_TIMEOUT_SEC:
+            self.send_velocity(0.0, 0.0, 0.0)
+            self.command_is_active = False
+            self.get_logger().warning('No /cmd_vel recently; sent zero velocity to STM32')
 
     def serial_callback(self):
-
         try:
-
-            while self.serial.in_waiting:
-
-                line = self.serial.readline()
-
-                if not line:
+            available = self.serial.in_waiting
+            if not available:
+                return
+            chunk = self.serial.read(min(available, 4096))
+            if not chunk:
+                return
+            self.rx_buffer.extend(chunk)
+            if len(self.rx_buffer) > self.MAX_RX_BYTES:
+                self.rx_buffer.clear()
+                self.get_logger().warning('UART receive buffer overflow; discarded incomplete data')
+                return
+            while b'\n' in self.rx_buffer:
+                line_bytes, _, remainder = self.rx_buffer.partition(b'\n')
+                self.rx_buffer = bytearray(remainder)
+                if len(line_bytes) > self.MAX_LINE_BYTES:
                     continue
+                line = line_bytes.decode('utf-8', errors='ignore').strip()
+                if line.startswith('ENC,'):
+                    self.process_encoder(line)
+                elif line.startswith('BAT,'):
+                    self.process_battery(line)
+                elif line.startswith('LiBot STM32 READY'):
+                    self.get_logger().info(line)
+                elif line:
+                    self.get_logger().debug(f'STM32: {line}')
+        except (serial.SerialException, OSError) as exc:
+            if time.monotonic() - self.last_serial_error_logged > 2.0:
+                self.get_logger().error(f'UART read error: {exc}')
+                self.last_serial_error_logged = time.monotonic()
 
-                line = line.decode(
-                    'utf-8',
-                    errors='ignore'
-                ).strip()
+    @staticmethod
+    def battery_voltage_to_percentage(voltage):
+        # Approximate voltage-only 3S LiPo indication; not a calibrated SOC.
+        table = [
+            (12.60, 100.0), (12.39, 90.0), (12.18, 80.0),
+            (11.97, 70.0), (11.76, 60.0), (11.55, 50.0),
+            (11.34, 40.0), (11.13, 30.0), (10.92, 20.0),
+            (10.71, 10.0), (10.50, 0.0),
+        ]
+        if voltage >= table[0][0]:
+            return 100.0
+        if voltage <= table[-1][0]:
+            return 0.0
+        for (hi_v, hi_p), (lo_v, lo_p) in zip(table, table[1:]):
+            if lo_v <= voltage <= hi_v:
+                return lo_p + (voltage - lo_v) * (hi_p - lo_p) / (hi_v - lo_v)
+        return 0.0
 
-                if not line:
-                    continue
+    def process_battery(self, line):
+        try:
+            parts = line.split(',')
+            if len(parts) != 2:
+                return
+            if parts[1].strip() == 'ERROR':
+                self.get_logger().warning('STM32: INA226 voltage read error')
+                return
+            voltage = float(parts[1].strip()) / 1000.0
+            if not math.isfinite(voltage) or voltage <= 0.0:
+                return
+            percentage = self.battery_voltage_to_percentage(voltage)
+            self.battery_voltage = voltage
+            self.battery_percentage = percentage
 
-                # -------------------------------------------------
-                # READY
-                # -------------------------------------------------
-
-                if line.startswith('LiBot STM32 READY'):
-
-                    self.get_logger().info(
-                        line
-                    )
-
-                # -------------------------------------------------
-                # ENCODER
-                # -------------------------------------------------
-
-                elif line.startswith('ENC,'):
-
-                    self.process_encoder(
-                        line
-                    )
-
-                else:
-
-                    self.get_logger().debug(
-                        f'STM32: {line}'
-                    )
-
-        except Exception as e:
-
-            self.get_logger().error(
-                f'UART read error: {e}'
-            )
-
-    # =========================================================
-    # PROCESS ENCODER
-    # =========================================================
+            msg = BatteryState()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.voltage = voltage
+            msg.percentage = percentage / 100.0  # BatteryState uses 0..1
+            msg.current = float('nan')
+            msg.charge = float('nan')
+            msg.capacity = 3.0
+            msg.design_capacity = 3.0
+            msg.power_supply_status = BatteryState.POWER_SUPPLY_STATUS_DISCHARGING
+            msg.power_supply_health = BatteryState.POWER_SUPPLY_HEALTH_UNKNOWN
+            msg.power_supply_technology = BatteryState.POWER_SUPPLY_TECHNOLOGY_LIPO
+            msg.present = True
+            self.battery_pub.publish(msg)
+        except (ValueError, OverflowError) as exc:
+            self.get_logger().warning(f'Battery parse error: {exc}')
 
     def process_encoder(self, line):
-
         try:
-
             parts = line.split(',')
-
             if len(parts) != 5:
                 return
+            enc = tuple(int(value) for value in parts[1:])
+            
+        except ValueError:
+            self.get_logger().warning(f'Invalid encoder packet: {line[:80]}')
+            return
 
-            m1 = int(parts[1])
-            m2 = int(parts[2])
-            m3 = int(parts[3])
-            m4 = int(parts[4])
+        now = time.monotonic()
+        self.last_encoder_receive_monotonic = now
+        self.last_encoder_timeout_logged = False
+        if self.last_enc is None:
+            self.last_enc = enc
+            self.last_encoder_monotonic = now
+            return
 
-            current_enc = (
-                m1,
-                m2,
-                m3,
-                m4
-            )
+        dt = now - self.last_encoder_monotonic
+        deltas = [new - old for new, old in zip(enc, self.last_enc)]
+        self.last_enc = enc
+        self.last_encoder_monotonic = now
+        if dt <= 0.0:
+            return
 
-            # -------------------------------------------------
-            # FIRST MESSAGE
-            # -------------------------------------------------
+        d1 = deltas[0] * self.M1_SIGN
+        d2 = deltas[1] * self.M2_SIGN
+        d3 = deltas[2] * self.M3_SIGN
+        d4 = deltas[3] * self.M4_SIGN
 
-            if self.last_enc is None:
 
-                self.last_enc = current_enc
+        self.get_logger().info(
+            f"ENC RAW DELTA: "
+            f"M1={deltas[0]}, "
+            f"M2={deltas[1]}, "
+            f"M3={deltas[2]}, "
+            f"M4={deltas[3]} | "
+            f"ENC NORMALIZED: "
+            f"M1={d1}, M2={d2}, M3={d3}, M4={d4}"
+        )
 
-                self.last_time = (
-                    self.get_clock().now()
-                )
+        scale = self.WHEEL_CIRCUMFERENCE / self.ENCODER_CPR
+        s1, s2, s3, s4 = (d1 * scale, d2 * scale, d3 * scale, d4 * scale)
 
-                return
+        # Mecanum X-roller configuration, ENC wheel order FR, FL, RR, RL.
+        # +x forward, +y left, +yaw counterclockwise.
+        dx = (s1 + s2 + s3 + s4) / 4.0
+        dy = (s1 - s2 - s3 + s4) / 4.0
+        dtheta = (-s1 + s2 - s3 + s4) / (4.0 * self.L_PLUS_W)
 
-            # -------------------------------------------------
-            # ENCODER DELTA
-            # -------------------------------------------------
+        theta_mid = self.theta + 0.5 * dtheta
+        self.x += dx * math.cos(theta_mid) - dy * math.sin(theta_mid)
+        self.y += dx * math.sin(theta_mid) + dy * math.cos(theta_mid)
+        self.theta = math.atan2(math.sin(self.theta + dtheta), math.cos(self.theta + dtheta))
 
-            d1 = m1 - self.last_enc[0]
-            d2 = m2 - self.last_enc[1]
-            d3 = m3 - self.last_enc[2]
-            d4 = m4 - self.last_enc[3]
-
-            self.last_enc = current_enc
-
-            # =========================================================
-            # NORMALIZE ENCODER DIRECTION
-            # =========================================================
-
-            d1 *= self.M1_SIGN
-            d2 *= self.M2_SIGN
-            d3 *= self.M3_SIGN
-            d4 *= self.M4_SIGN
-
-            # self.get_logger().info(
-            #     f'ENC NORMALIZED: '
-            #     f'M1(FR)={d1}, '
-            #     f'M2(FL)={d2}, '
-            #     f'M3(RR)={d3}, '
-            #     f'M4(RL)={d4}'
-            # )
-
-            # -------------------------------------------------
-            # COUNTS -> WHEEL DISTANCE
-            # -------------------------------------------------
-
-            meters_per_count = (
-                self.WHEEL_CIRCUMFERENCE
-                / self.ENCODER_CPR
-            )
-
-            wheel_d1 = d1 * meters_per_count
-            wheel_d2 = d2 * meters_per_count
-            wheel_d3 = d3 * meters_per_count
-            wheel_d4 = d4 * meters_per_count
-
-            # -------------------------------------------------
-            # MECANUM ODOMETRY
-            # -------------------------------------------------
-
-            dx = (
-                wheel_d1
-                + wheel_d2
-                + wheel_d3
-                + wheel_d4
-            ) / 4.0
-
-            dy = (
-                -wheel_d1
-                + wheel_d2
-                + wheel_d3
-                -wheel_d4
-            ) / 4.0
-
-            dtheta = (
-                -wheel_d1
-                + wheel_d2
-                -wheel_d3
-                + wheel_d4
-            ) / (
-                4.0 * self.L_PLUS_W
-            )
-
-            # -------------------------------------------------
-            # UPDATE WORLD POSITION
-            # -------------------------------------------------
-
-            cos_theta = math.cos(
-                self.theta
-            )
-
-            sin_theta = math.sin(
-                self.theta
-            )
-
-            self.x += (
-                dx * cos_theta
-                - dy * sin_theta
-            )
-
-            self.y += (
-                dx * sin_theta
-                + dy * cos_theta
-            )
-
-            self.theta += dtheta
-
-            # Normalize theta to [-pi, pi]
-
-            self.theta = math.atan2(
-                math.sin(self.theta),
-                math.cos(self.theta)
-            )
-
-        except Exception as e:
-
-            self.get_logger().error(
-                f'Encoder parse error: {e}'
-            )
-
-    # =========================================================
-    # PUBLISH ODOM
-    # =========================================================
+        self.odom_vx = dx / dt
+        self.odom_vy = dy / dt
+        self.odom_wz = dtheta / dt
 
     def publish_odom(self):
-
         now = self.get_clock().now()
+        if (self.last_encoder_receive_monotonic is None or
+                time.monotonic() - self.last_encoder_receive_monotonic > self.ENCODER_TIMEOUT_SEC):
+            self.odom_vx = 0.0
+            self.odom_vy = 0.0
+            self.odom_wz = 0.0
+            if self.last_encoder_receive_monotonic is not None and not self.last_encoder_timeout_logged:
+                self.get_logger().warning('Encoder timeout; odom twist set to zero (pose not reset)')
+                self.last_encoder_timeout_logged = True
 
-        # -----------------------------------------------------
-        # ODOM MESSAGE
-        # -----------------------------------------------------
-
+        qz = math.sin(self.theta / 2.0)
+        qw = math.cos(self.theta / 2.0)
         odom = Odometry()
-
         odom.header.stamp = now.to_msg()
-
         odom.header.frame_id = 'odom'
-
         odom.child_frame_id = 'base_link'
-
-        # -----------------------------------------------------
-        # POSITION
-        # -----------------------------------------------------
-
         odom.pose.pose.position.x = self.x
         odom.pose.pose.position.y = self.y
         odom.pose.pose.position.z = 0.0
-
-        # -----------------------------------------------------
-        # YAW -> QUATERNION
-        # -----------------------------------------------------
-        qz = math.sin(self.theta / 2.0)
-        qw = math.cos(self.theta / 2.0)
-
-        odom.pose.pose.orientation.x = 0.0
-        odom.pose.pose.orientation.y = 0.0
         odom.pose.pose.orientation.z = qz
         odom.pose.pose.orientation.w = qw
+        odom.twist.twist.linear.x = self.odom_vx
+        odom.twist.twist.linear.y = self.odom_vy
+        odom.twist.twist.angular.z = self.odom_wz
 
-        # -----------------------------------------------------
-        # VELOCITY
-        # -----------------------------------------------------
+        # Placeholder covariances: tune using measurements; planar robot.
+        odom.pose.covariance = [0.0] * 36
+        odom.pose.covariance[0] = 0.05
+        odom.pose.covariance[7] = 0.05
+        odom.pose.covariance[14] = 1e6
+        odom.pose.covariance[21] = 1e6
+        odom.pose.covariance[28] = 1e6
+        odom.pose.covariance[35] = 0.1
+        odom.twist.covariance = [0.0] * 36
+        odom.twist.covariance[0] = 0.05
+        odom.twist.covariance[7] = 0.05
+        odom.twist.covariance[14] = 1e6
+        odom.twist.covariance[21] = 1e6
+        odom.twist.covariance[28] = 1e6
+        odom.twist.covariance[35] = 0.1
+        self.odom_pub.publish(odom)
 
-        odom.twist.twist.linear.x = self.vx
-        odom.twist.twist.linear.y = self.vy
-        odom.twist.twist.angular.z = self.wz
+        tf = TransformStamped()
+        tf.header.stamp = now.to_msg()
+        tf.header.frame_id = 'odom'
+        tf.child_frame_id = 'base_link'
+        tf.transform.translation.x = self.x
+        tf.transform.translation.y = self.y
+        tf.transform.translation.z = 0.0
+        tf.transform.rotation.z = qz
+        tf.transform.rotation.w = qw
+        self.tf_broadcaster.sendTransform(tf)
 
-        # -----------------------------------------------------
-        # COVARIANCE
-        # -----------------------------------------------------
-
-        odom.pose.covariance = [
-            0.05, 0,    0,    0,    0,    0,
-            0,    0.05, 0,    0,    0,    0,
-            0,    0,    0.1,  0,    0,    0,
-            0,    0,    0,    0.1,  0,    0,
-            0,    0,    0,    0,    0.1,  0,
-            0,    0,    0,    0,    0,    0.1
-        ]
-
-        odom.twist.covariance = [
-            0.05, 0,    0,    0,    0,    0,
-            0,    0.05, 0,    0,    0,    0,
-            0,    0,    0.1,  0,    0,    0,
-            0,    0,    0,    0.1,  0,    0,
-            0,    0,    0,    0,    0.1,  0,
-            0,    0,    0,    0,    0,    0.1
-        ]
-
-        self.odom_pub.publish(
-            odom
-        )
-
-        # -----------------------------------------------------
-        # TF: odom -> base_link
-        # -----------------------------------------------------
-
-        transform = TransformStamped()
-
-        transform.header.stamp = now.to_msg()
-
-        transform.header.frame_id = 'odom'
-
-        transform.child_frame_id = 'base_link'
-
-        transform.transform.translation.x = self.x
-        transform.transform.translation.y = self.y
-        transform.transform.translation.z = 0.0
-
-        transform.transform.rotation.x = 0.0
-        transform.transform.rotation.y = 0.0
-        transform.transform.rotation.z = qz
-        transform.transform.rotation.w = qw
-
-        self.tf_broadcaster.sendTransform(
-            transform
-        )
+    def shutdown(self):
+        try:
+            self.send_velocity(0.0, 0.0, 0.0)
+        except Exception:
+            pass
+        if self.serial.is_open:
+            self.serial.close()
 
 
 def main(args=None):
-
     rclpy.init(args=args)
-
-    node = STM32Bridge()
-
+    node = None
     try:
-
+        node = STM32Bridge()
         rclpy.spin(node)
-
     except KeyboardInterrupt:
-
         pass
-
     finally:
-
-        try:
-
-            node.serial.close()
-
-        except Exception:
-            pass
-
-        node.destroy_node()
-
-        rclpy.shutdown()
+        if node is not None:
+            node.shutdown()
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
-
     main()

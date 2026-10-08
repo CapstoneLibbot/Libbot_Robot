@@ -48,6 +48,11 @@ def generate_launch_description():
             executable='stm32_bridge',
             name='stm32_bridge',
             output='screen',
+            parameters=[{
+                'port': '/dev/serial0',
+                'baudrate': 115200,
+                'use_sim_time': False,
+            }],
         ),
 
         # =========================
@@ -58,9 +63,9 @@ def generate_launch_description():
             executable='static_transform_publisher',
             name='base_link_to_laser',
             arguments=[
-                '--x', '-0.13',
-                '--y', '-0.01',
-                '--z', '0.22',
+                '--x', '-0.08',
+                '--y', '-0.02',
+                '--z', '0.23',
                 '--yaw', '1.5708',
                 '--pitch', '0',
                 '--roll', '0',
