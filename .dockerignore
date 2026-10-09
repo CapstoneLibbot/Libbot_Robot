@@ -1,0 +1,13 @@
+.git
+**/.git
+**/__pycache__
+**/*.pyc
+
+# These were accidentally generated inside ros2_ws/src on the robot.
+# They are not source packages and must not enter the Docker build context.
+ros2_ws/src/build
+ros2_ws/src/install
+ros2_ws/src/log
+
+logs
+maps
