@@ -1,12 +1,16 @@
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
 import os
 
 
 def generate_launch_description():
+
+    bringup_share = get_package_share_directory('libot_bringup')
+    description_share = get_package_share_directory('libot_description')
 
     # =========================
     # RPLIDAR A1 launch
@@ -26,7 +30,36 @@ def generate_launch_description():
         'online_async_launch.py'
     )
 
+    description_launch = os.path.join(
+        description_share,
+        'launch',
+        'description.launch.py'
+    )
+
+    slam_params_file = os.path.join(
+        bringup_share,
+        'config',
+        'mapper_params_online_async.yaml'
+    )
+
     return LaunchDescription([
+
+        DeclareLaunchArgument(
+            'lidar_port',
+            default_value='/dev/rplidar',
+            description='Serial device used by the RPLIDAR'
+        ),
+        DeclareLaunchArgument(
+            'stm32_port',
+            default_value='/dev/serial0',
+            description='Serial device used by the STM32 bridge'
+        ),
+
+        # Publish the fixed URDF chain exactly once:
+        # base_footprint -> base_link -> laser.
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(description_launch)
+        ),
 
         # =========================
         # RPLIDAR
@@ -34,7 +67,7 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(sllidar_launch),
             launch_arguments={
-                'serial_port': '/dev/rplidar',
+                'serial_port': LaunchConfiguration('lidar_port'),
                 'serial_baudrate': '115200',
                 'frame_id': 'laser',
             }.items()
@@ -49,31 +82,12 @@ def generate_launch_description():
             name='stm32_bridge',
             output='screen',
             parameters=[{
-                'port': '/dev/serial0',
+                'port': LaunchConfiguration('stm32_port'),
                 'baudrate': 115200,
                 'use_sim_time': False,
             }],
         ),
 
-        # =========================
-        # Static TF
-        # =========================
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            name='base_link_to_laser',
-            arguments=[
-                '--x', '-0.08',
-                '--y', '-0.02',
-                '--z', '0.23',
-                '--yaw', '1.5708',
-                '--pitch', '0',
-                '--roll', '0',
-                '--frame-id', 'base_link',
-                '--child-frame-id', 'laser'
-            ],
-            output='screen',
-        ),
         # =========================
         # SLAM Toolbox
         # Delay a little so LiDAR + STM32 start first
@@ -84,8 +98,7 @@ def generate_launch_description():
                 IncludeLaunchDescription(
                     PythonLaunchDescriptionSource(slam_launch),
                     launch_arguments={
-                        'slam_params_file':
-                            '/ros2_ws/src/config/mapper_params_online_async.yaml',
+                        'slam_params_file': slam_params_file,
                         'use_sim_time': 'false',
                     }.items()
                 )

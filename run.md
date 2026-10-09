@@ -1,97 +1,43 @@
-Terminal 1 - Robot State Publisher
+# Chạy mapping LiBot
 
+Không chạy riêng `description.launch.py`, `sllidar_a1_launch.py`,
+`static_transform_publisher` hoặc `slam_toolbox` cùng lúc với launch bên dưới.
+`mapping.launch.py` đã khởi động tất cả các node cần thiết. Chạy trùng node sẽ
+tạo nhiều TF publisher và có thể làm bản đồ bị lệch/chồng lên nhau.
 
+```bash
 cd ~/Libbot/Libbot_Robot
 docker exec -it libot_ros2 bash
 
 source /opt/ros/jazzy/setup.bash
-source /ros2_ws/install/setup.bash
+cd /ros2_ws
+colcon build --symlink-install --packages-select \
+  libot_description libbot_stm32 libot_bringup
+source install/setup.bash
 
-ros2 launch libot_description description.launch.py
-=================================================================
-Terminal 2 — RPLIDAR
+ros2 launch libot_bringup mapping.launch.py \
+  lidar_port:=/dev/rplidar \
+  stm32_port:=/dev/serial0
+```
 
+Trong RViz dùng `Fixed Frame: map`, sau đó thêm `/map` và `/scan`.
 
-docker exec -it libot_ros2 bash
+## Kiểm tra TF trước khi quét
 
-source /opt/ros/jazzy/setup.bash
-source /ros2_ws/install/setup.bash
+Cây TF hợp lệ phải chỉ có một chuỗi:
 
-ros2 launch sllidar_ros2 sllidar_a1_launch.py \
-    serial_port:=/dev/rplidar \
-    serial_baudrate:=115200 \
-    frame_id:=laser
-=================================================================
-Terminal 4 — tạo odom -> base_footprint tạm thời
+```text
+map -> odom -> base_footprint -> base_link -> laser
+```
 
+Kiểm tra node/TF bị chạy trùng:
 
-docker exec -it libot_ros2 bash
+```bash
+ros2 node list | sort
+ros2 run tf2_tools view_frames
+ros2 topic hz /scan
+ros2 topic hz /odom
+```
 
-
-source /opt/ros/jazzy/setup.bash
-source /ros2_ws/install/setup.bash
-
-ros2 run tf2_ros static_transform_publisher \
-    0 0 0 0 0 0 \
-    odom base_footprint
-
-=================================================================
-Terminal 5 — SLAM Toolbox
-
-
-docker exec -it libot_ros2 bash
-
-source /opt/ros/jazzy/setup.bash
-source /ros2_ws/install/setup.bash
-
-ros2 launch slam_toolbox online_async_launch.py
-
-=================================================================
-Terminal 6 — RViz
-
-docker exec -it libot_ros2 bash
-
-
-source /opt/ros/jazzy/setup.bash
-source /ros2_ws/install/setup.bash
-
-rviz2
-
-=============================================
-Cấu hình RViz
-
-Trong RViz:
-
-1. Fixed Frame
-
-Ở panel bên trái:
-
-Global Options
-    Fixed Frame: map
-2. Add Map
-
-Bấm:
-
-Add
-
-→ chọn:
-
-By topic
-→ /map
-→ Map
-3. Add LaserScan
-
-Bấm:
-
-Add
-→ By topic
-→ /scan
-→ LaserScan
-
-Đặt:
-
-Topic: /scan
-
-và:
-
-Reliability: Best Effort
+Không chạy lệnh TF tĩnh `odom -> base_footprint`: transform này do
+`stm32_bridge` phát động từ encoder.

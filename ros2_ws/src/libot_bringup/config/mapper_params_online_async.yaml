@@ -22,7 +22,7 @@ slam_toolbox:
 
     # Scan matching and map update tuning.
     scan_buffer_size: 10
-    scan_buffer_maximum: 100
+    scan_buffer_maximum_scan_distance: 10.0
     use_scan_matching: true
     use_scan_barycenter: true
     do_loop_closing: true
@@ -30,12 +30,10 @@ slam_toolbox:
     # Loop closure tuning.
     loop_match_minimum_chain_size: 10
     loop_match_maximum_variance_coarse: 3.0
-    loop_match_minimum_response_coarse: 0.35
-    loop_match_minimum_response_fine: 0.45
-    loop_search_maximum_distance: 3.0
+    loop_match_minimum_response_coarse: 0.45
+    loop_match_minimum_response_fine: 0.55
+    loop_search_maximum_distance: 2.0
 
     # Good default values for a compact indoor robot with a 2D lidar.
     link_match_minimum_response_fine: 0.1
-    link_scan_maximum: 10
-    minimum_travel_distance: 0.10
-    minimum_travel_heading: 0.10
+    link_scan_maximum_distance: 1.5

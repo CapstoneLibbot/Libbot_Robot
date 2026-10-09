@@ -148,13 +148,13 @@ Nội dung launch cần khởi động:
 ### Launch command
 
 ```bash
-ros2 launch libot_bringup mapping.launch.py serial_port:=/dev/ttyUSB0 lidar_port:=/dev/ttyUSB0 use_rviz:=true
+ros2 launch libot_bringup mapping.launch.py stm32_port:=/dev/ttyACM0 lidar_port:=/dev/ttyUSB0
 ```
 
 Nếu cổng khác, thay bằng giá trị đúng:
 
 ```bash
-ros2 launch libot_bringup mapping.launch.py serial_port:=/dev/ttyACM0 lidar_port:=/dev/ttyUSB0
+ros2 launch libot_bringup mapping.launch.py stm32_port:=/dev/ttyACM0 lidar_port:=/dev/ttyUSB0
 ```
 
 ---

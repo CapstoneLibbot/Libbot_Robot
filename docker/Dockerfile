@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-jazzy-xacro \
     ros-jazzy-robot-state-publisher \
     ros-jazzy-joint-state-publisher \
+    ros-jazzy-sllidar-ros2 \
     python3-colcon-common-extensions \
     python3-serial \
     python3-pip \

@@ -30,6 +30,9 @@ class STM32Bridge(Node):
     M4_SIGN = -1
 
     ENCODER_TIMEOUT_SEC = 0.30
+    ENCODER_PACKET_PERIOD_SEC = 0.02
+    MAX_WHEEL_SPEED_MPS = 1.5
+    ENCODER_JUMP_MARGIN = 1.5
     CMD_TIMEOUT_SEC = 0.50  # Safety stop command; STM32 needs its own watchdog
     MAX_RX_BYTES = 8192
     MAX_LINE_BYTES = 256
@@ -219,13 +222,35 @@ class STM32Bridge(Node):
         if dt <= 0.0:
             return
 
+        # A reset of the STM32 changes its cumulative counters abruptly. Do
+        # not integrate that discontinuity into odometry: it would move the
+        # robot pose instantaneously and create a second, offset SLAM map.
+        # Several buffered UART lines can arrive in one ROS timer callback,
+        # so the physical packet period is the lower bound for this check.
+        scale = self.WHEEL_CIRCUMFERENCE / self.ENCODER_CPR
+        effective_dt = max(dt, self.ENCODER_PACKET_PERIOD_SEC)
+        max_delta = max(
+            100.0,
+            self.MAX_WHEEL_SPEED_MPS * effective_dt
+            / scale * self.ENCODER_JUMP_MARGIN,
+        )
+        if any(abs(delta) > max_delta for delta in deltas):
+            self.odom_vx = 0.0
+            self.odom_vy = 0.0
+            self.odom_wz = 0.0
+            self.get_logger().warning(
+                f'Encoder discontinuity ignored: deltas={deltas}, '
+                f'limit={max_delta:.0f} counts'
+            )
+            return
+
         d1 = deltas[0] * self.M1_SIGN
         d2 = deltas[1] * self.M2_SIGN
         d3 = deltas[2] * self.M3_SIGN
         d4 = deltas[3] * self.M4_SIGN
 
 
-        self.get_logger().info(
+        self.get_logger().debug(
             f"ENC RAW DELTA: "
             f"M1={deltas[0]}, "
             f"M2={deltas[1]}, "
@@ -235,7 +260,6 @@ class STM32Bridge(Node):
             f"M1={d1}, M2={d2}, M3={d3}, M4={d4}"
         )
 
-        scale = self.WHEEL_CIRCUMFERENCE / self.ENCODER_CPR
         s1, s2, s3, s4 = (d1 * scale, d2 * scale, d3 * scale, d4 * scale)
 
         # Mecanum X-roller configuration, ENC wheel order FR, FL, RR, RL.
@@ -269,7 +293,7 @@ class STM32Bridge(Node):
         odom = Odometry()
         odom.header.stamp = now.to_msg()
         odom.header.frame_id = 'odom'
-        odom.child_frame_id = 'base_link'
+        odom.child_frame_id = 'base_footprint'
         odom.pose.pose.position.x = self.x
         odom.pose.pose.position.y = self.y
         odom.pose.pose.position.z = 0.0
@@ -299,7 +323,7 @@ class STM32Bridge(Node):
         tf = TransformStamped()
         tf.header.stamp = now.to_msg()
         tf.header.frame_id = 'odom'
-        tf.child_frame_id = 'base_link'
+        tf.child_frame_id = 'base_footprint'
         tf.transform.translation.x = self.x
         tf.transform.translation.y = self.y
         tf.transform.translation.z = 0.0
