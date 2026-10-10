@@ -29,9 +29,11 @@ class ManualControl(Node):
         # SPEED
         # =====================================================
 
-        self.linear_speed = 1
-        self.strafe_speed = 1
-        self.angular_speed = 2.0
+        # Mapping needs slow, smooth motion. A fast turn distorts each
+        # RPLIDAR revolution and makes scan matching much less reliable.
+        self.linear_speed = 0.5
+        self.strafe_speed = 0.5
+        self.angular_speed = 1
 
         # =====================================================
         # CURRENT COMMAND
@@ -143,17 +145,17 @@ class ManualControl(Node):
 
     def reset_speed(self):
 
-        self.linear_speed = 1
-        self.strafe_speed = 1
-        self.angular_speed = 2.0
+        self.linear_speed = 0.5
+        self.strafe_speed = 0.5
+        self.angular_speed = 1
 
         self.stop()
 
         self.get_logger().info(
             'Speed reset: '
-            'linear=0.30 m/s, '
-            'strafe=0.30 m/s, '
-            'angular=1.0 rad/s'
+            'linear=0.15 m/s, '
+            'strafe=0.10 m/s, '
+            'angular=0.30 rad/s'
         )
 
 
