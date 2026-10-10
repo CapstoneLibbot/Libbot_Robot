@@ -93,7 +93,7 @@ def generate_launch_description():
         # Delay a little so LiDAR + STM32 start first
         # =========================
         TimerAction(
-            period=3.0,
+            period=5.0,
             actions=[
                 IncludeLaunchDescription(
                     PythonLaunchDescriptionSource(slam_launch),
