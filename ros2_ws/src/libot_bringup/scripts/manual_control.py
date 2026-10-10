@@ -13,8 +13,12 @@ from geometry_msgs.msg import Twist
 class ManualControl(Node):
 
     PUBLISH_PERIOD = 0.05
-    MAX_LINEAR_ACCEL = 0.35   # m/s^2; limit chassis shock while mapping
-    MAX_ANGULAR_ACCEL = 0.80  # rad/s^2
+    MAX_LINEAR_ACCEL = 0.45   # m/s^2; limit chassis shock while mapping
+    MAX_ANGULAR_ACCEL = 1.00  # rad/s^2
+
+    DEFAULT_LINEAR_SPEED = 0.25   # m/s
+    DEFAULT_STRAFE_SPEED = 0.20   # m/s
+    DEFAULT_ANGULAR_SPEED = 0.60  # rad/s
 
     def __init__(self):
         super().__init__('manual_control')
@@ -33,9 +37,9 @@ class ManualControl(Node):
         # SPEED
         # =====================================================
 
-        self.linear_speed = 0.20
-        self.strafe_speed = 0.15
-        self.angular_speed = 0.50
+        self.linear_speed = self.DEFAULT_LINEAR_SPEED
+        self.strafe_speed = self.DEFAULT_STRAFE_SPEED
+        self.angular_speed = self.DEFAULT_ANGULAR_SPEED
 
         # =====================================================
         # CURRENT COMMAND
@@ -175,17 +179,17 @@ class ManualControl(Node):
 
     def reset_speed(self):
 
-        self.linear_speed = 0.20
-        self.strafe_speed = 0.15
-        self.angular_speed = 0.50
+        self.linear_speed = self.DEFAULT_LINEAR_SPEED
+        self.strafe_speed = self.DEFAULT_STRAFE_SPEED
+        self.angular_speed = self.DEFAULT_ANGULAR_SPEED
 
         self.stop()
 
         self.get_logger().info(
             'Speed reset: '
-            'linear=0.20 m/s, '
-            'strafe=0.15 m/s, '
-            'angular=0.50 rad/s'
+            f'linear={self.linear_speed:.2f} m/s, '
+            f'strafe={self.strafe_speed:.2f} m/s, '
+            f'angular={self.angular_speed:.2f} rad/s'
         )
 
 
