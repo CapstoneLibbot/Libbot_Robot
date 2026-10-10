@@ -12,14 +12,6 @@ from geometry_msgs.msg import Twist
 
 class ManualControl(Node):
 
-    PUBLISH_PERIOD = 0.05
-    MAX_LINEAR_ACCEL = 0.45   # m/s^2; limit chassis shock while mapping
-    MAX_ANGULAR_ACCEL = 1.00  # rad/s^2
-
-    DEFAULT_LINEAR_SPEED = 0.25   # m/s
-    DEFAULT_STRAFE_SPEED = 0.20   # m/s
-    DEFAULT_ANGULAR_SPEED = 0.60  # rad/s
-
     def __init__(self):
         super().__init__('manual_control')
 
@@ -37,9 +29,9 @@ class ManualControl(Node):
         # SPEED
         # =====================================================
 
-        self.linear_speed = self.DEFAULT_LINEAR_SPEED
-        self.strafe_speed = self.DEFAULT_STRAFE_SPEED
-        self.angular_speed = self.DEFAULT_ANGULAR_SPEED
+        self.linear_speed = 1
+        self.strafe_speed = 1
+        self.angular_speed = 2.0
 
         # =====================================================
         # CURRENT COMMAND
@@ -48,16 +40,13 @@ class ManualControl(Node):
         self.current_x = 0.0
         self.current_y = 0.0
         self.current_z = 0.0
-        self.target_x = 0.0
-        self.target_y = 0.0
-        self.target_z = 0.0
 
         # =====================================================
         # PUBLISH 20 Hz
         # =====================================================
 
         self.timer = self.create_timer(
-            self.PUBLISH_PERIOD,
+            0.05,
             self.publish_command
         )
 
@@ -96,14 +85,14 @@ class ManualControl(Node):
 
     def set_command(self, x=0.0, y=0.0, z=0.0):
 
-        self.target_x = float(x)
-        self.target_y = float(y)
-        self.target_z = float(z)
+        self.current_x = float(x)
+        self.current_y = float(y)
+        self.current_z = float(z)
 
         self.get_logger().info(
-            f'TARGET: x={self.target_x:.2f}, '
-            f'y={self.target_y:.2f}, '
-            f'z={self.target_z:.2f}'
+            f'CMD: x={self.current_x:.2f}, '
+            f'y={self.current_y:.2f}, '
+            f'z={self.current_z:.2f}'
         )
 
     # =========================================================
@@ -111,19 +100,6 @@ class ManualControl(Node):
     # =========================================================
 
     def publish_command(self):
-
-        linear_step = self.MAX_LINEAR_ACCEL * self.PUBLISH_PERIOD
-        angular_step = self.MAX_ANGULAR_ACCEL * self.PUBLISH_PERIOD
-
-        self.current_x = self.move_towards(
-            self.current_x, self.target_x, linear_step
-        )
-        self.current_y = self.move_towards(
-            self.current_y, self.target_y, linear_step
-        )
-        self.current_z = self.move_towards(
-            self.current_z, self.target_z, angular_step
-        )
 
         msg = Twist()
 
@@ -137,24 +113,12 @@ class ManualControl(Node):
 
         self.cmd_pub.publish(msg)
 
-    @staticmethod
-    def move_towards(current, target, maximum_step):
-
-        if current < target:
-            return min(current + maximum_step, target)
-        if current > target:
-            return max(current - maximum_step, target)
-        return target
-
     # =========================================================
     # STOP
     # =========================================================
 
     def stop(self):
 
-        self.target_x = 0.0
-        self.target_y = 0.0
-        self.target_z = 0.0
         self.current_x = 0.0
         self.current_y = 0.0
         self.current_z = 0.0
@@ -179,17 +143,17 @@ class ManualControl(Node):
 
     def reset_speed(self):
 
-        self.linear_speed = self.DEFAULT_LINEAR_SPEED
-        self.strafe_speed = self.DEFAULT_STRAFE_SPEED
-        self.angular_speed = self.DEFAULT_ANGULAR_SPEED
+        self.linear_speed = 1
+        self.strafe_speed = 1
+        self.angular_speed = 2.0
 
         self.stop()
 
         self.get_logger().info(
             'Speed reset: '
-            f'linear={self.linear_speed:.2f} m/s, '
-            f'strafe={self.strafe_speed:.2f} m/s, '
-            f'angular={self.angular_speed:.2f} rad/s'
+            'linear=0.30 m/s, '
+            'strafe=0.30 m/s, '
+            'angular=1.0 rad/s'
         )
 
 
@@ -327,7 +291,7 @@ def main(args=None):
 
                 elif key == 'x':
 
-                    node.set_command()
+                    node.stop()
 
                 # -----------------------------------------
                 # R - RESET SPEED
