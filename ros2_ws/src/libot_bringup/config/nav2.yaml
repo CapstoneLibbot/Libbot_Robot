@@ -2,8 +2,8 @@
 # Frame tree: map -> odom -> base_footprint -> base_link -> laser
 # IMPORTANT: The footprint below is a placeholder from the original configuration.
 # Measure the actual outer dimensions including chassis / protrusions before moving.
-# This file does NOT fix Python NameError: name 'false' is not defined in navigation.launch.py.
-# This configuration omits collision_monitor, route_server and docking_server intentionally.
+# navigation.launch.py starts only the Nav2 nodes configured in this file.
+# collision_monitor, route_server and docking_server are omitted intentionally.
 # Ensure Nav2 controller output reaches STM32 bridge /cmd_vel via launch remapping.
 # Verify MPPI Omni plugin and AMCL OmniMotionModel are installed in your Jazzy image.
 
@@ -69,7 +69,8 @@ bt_navigator:
     - follow_path_error_code
 controller_server:
   ros__parameters:
-    controller_frequency: 15.0
+    # MPPI model_dt is 0.05 s, so its control period must also be 0.05 s.
+    controller_frequency: 20.0
     costmap_update_timeout: 0.3
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001

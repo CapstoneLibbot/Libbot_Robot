@@ -11,8 +11,9 @@ docker exec -it libot_ros2 bash
 
 source /opt/ros/jazzy/setup.bash
 cd /ros2_ws
-colcon build --symlink-install --packages-select \
-  libot_description libbot_stm32 libot_bringup
+colcon build --symlink-install \
+  --base-paths src/libot_description src/libbot_stm32 src/libot_bringup \
+  --packages-select libot_description libbot_stm32 libot_bringup
 source install/setup.bash
 
 ros2 launch libot_bringup mapping.launch.py \
@@ -61,8 +62,9 @@ docker exec -it libot_ros2 bash
 
 source /opt/ros/jazzy/setup.bash
 cd /ros2_ws
-colcon build --symlink-install --packages-select \
-  libot_description libbot_stm32 libot_bringup
+colcon build --symlink-install \
+  --base-paths src/libot_description src/libbot_stm32 src/libot_bringup \
+  --packages-select libot_description libbot_stm32 libot_bringup
 source install/setup.bash
 
 ros2 launch libot_bringup navigation.launch.py \
