@@ -22,8 +22,10 @@ class STM32Bridge(Node):
     W = TRACK_WIDTH / 2.0
     L_PLUS_W = L + W
 
-    # ENC packet wheel order: FR, FL, RR, RL
-    # Preserve existing tested wiring signs until verified physically.
+    # ENC packet wheel order, as defined by the STM32 firmware:
+    # M1=front-left, M2=front-right, M3=rear-left, M4=rear-right.
+    # The signs below convert the raw encoder direction to positive wheel
+    # motion in the robot kinematic convention.
     M1_SIGN = 1
     M2_SIGN = -1
     M3_SIGN = 1
@@ -262,11 +264,11 @@ class STM32Bridge(Node):
 
         s1, s2, s3, s4 = (d1 * scale, d2 * scale, d3 * scale, d4 * scale)
 
-        # Mecanum X-roller configuration, ENC wheel order FR, FL, RR, RL.
+        # Mecanum X-roller configuration, wheel order FL, FR, RL, RR.
         # +x forward, +y left, +yaw counterclockwise.
         dx = (s1 + s2 + s3 + s4) / 4.0
         dy = (s1 - s2 - s3 + s4) / 4.0
-        dtheta = (-s1 + s2 - s3 + s4) / (4.0 * self.L_PLUS_W)
+        dtheta = (s1 - s2 + s3 - s4) / (4.0 * self.L_PLUS_W)
 
         theta_mid = self.theta + 0.5 * dtheta
         self.x += dx * math.cos(theta_mid) - dy * math.sin(theta_mid)

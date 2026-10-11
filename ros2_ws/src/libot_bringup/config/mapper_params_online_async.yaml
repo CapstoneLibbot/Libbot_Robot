@@ -16,7 +16,10 @@ slam_toolbox:
     transform_publish_period: 0.02
     map_update_interval: 5.0
     resolution: 0.05
-    max_laser_range: 12.0
+    # Ignore unreliable near-field returns and distant points whose position
+    # error grows strongly when the 2D lidar vibrates or tilts.
+    min_laser_range: 0.15
+    max_laser_range: 8.0
     minimum_travel_distance: 0.10
     minimum_travel_heading: 0.10
 
