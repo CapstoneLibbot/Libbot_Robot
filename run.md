@@ -41,3 +41,10 @@ ros2 topic hz /odom
 
 Không chạy lệnh TF tĩnh `odom -> base_footprint`: transform này do
 `stm32_bridge` phát động từ encoder.
+
+
+
+
+ros2 run nav2_map_server map_saver_cli \
+  -f /ros2_ws/maps/library_map \
+  --ros-args -p map_subscribe_transient_local:=true
