@@ -48,3 +48,51 @@ Không chạy lệnh TF tĩnh `odom -> base_footprint`: transform này do
 ros2 run nav2_map_server map_saver_cli \
   -f /ros2_ws/maps/library_map \
   --ros-args -p map_subscribe_transient_local:=true
+
+## Chạy Nav2 và gửi goal trực tiếp từ RViz
+
+Không chạy `mapping.launch.py` cùng lúc với navigation vì hai launch file sẽ tạo
+trùng LiDAR, STM32 bridge và robot state publisher.
+
+```bash
+cd ~/Libbot/Libbot_Robot
+docker compose -f docker/compose.yaml up -d --build
+docker exec -it libot_ros2 bash
+
+source /opt/ros/jazzy/setup.bash
+cd /ros2_ws
+colcon build --symlink-install --packages-select \
+  libot_description libbot_stm32 libot_bringup
+source install/setup.bash
+
+ros2 launch libot_bringup navigation.launch.py \
+  map:=/ros2_ws/maps/library_map.yaml \
+  lidar_port:=/dev/rplidar \
+  stm32_port:=/dev/serial0
+```
+
+Khi RViz mở:
+
+1. Chờ bản đồ, robot và dữ liệu laser xuất hiện.
+2. Chọn **2D Pose Estimate**, bấm vào vị trí thật của robot trên bản đồ rồi kéo
+   mũi tên theo đúng hướng robot đang quay.
+3. Chờ laser khớp với tường trên bản đồ.
+4. Chọn **Nav2 Goal**, bấm vào vị trí đích và kéo mũi tên theo hướng dừng mong
+   muốn.
+
+Kiểm tra nhanh trong terminal khác nếu robot không chạy:
+
+```bash
+docker exec -it libot_ros2 bash
+source /opt/ros/jazzy/setup.bash
+source /ros2_ws/install/setup.bash
+
+ros2 topic hz /scan
+ros2 topic hz /odom
+ros2 run tf2_ros tf2_echo map base_footprint
+ros2 action list | grep navigate_to_pose
+ros2 lifecycle get /bt_navigator
+```
+
+Để chỉ chạy Nav2/RViz khi phần cứng đã được khởi động bởi một launch khác, thêm
+`use_hardware:=false`. Để chạy không có giao diện, thêm `use_rviz:=false`.
