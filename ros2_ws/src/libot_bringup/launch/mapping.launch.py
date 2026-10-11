@@ -13,15 +13,6 @@ def generate_launch_description():
     description_share = get_package_share_directory('libot_description')
 
     # =========================
-    # RPLIDAR A1 launch
-    # =========================
-    sllidar_launch = os.path.join(
-        get_package_share_directory('sllidar_ros2'),
-        'launch',
-        'sllidar_a1_launch.py'
-    )
-
-    # =========================
     # SLAM Toolbox launch
     # =========================
     slam_launch = os.path.join(
@@ -64,13 +55,21 @@ def generate_launch_description():
         # =========================
         # RPLIDAR
         # =========================
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(sllidar_launch),
-            launch_arguments={
+        Node(
+            package='sllidar_ros2',
+            executable='sllidar_node',
+            name='sllidar_node',
+            output='screen',
+            respawn=True,
+            respawn_delay=3.0,
+            parameters=[{
+                'channel_type': 'serial',
                 'serial_port': LaunchConfiguration('lidar_port'),
-                'serial_baudrate': '115200',
+                'serial_baudrate': 115200,
                 'frame_id': 'laser',
-            }.items()
+                'inverted': False,
+                'angle_compensate': True,
+            }],
         ),
 
         # =========================
