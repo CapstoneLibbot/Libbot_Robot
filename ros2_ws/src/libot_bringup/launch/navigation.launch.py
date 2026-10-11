@@ -13,11 +13,6 @@ def generate_launch_description():
     bringup_share = get_package_share_directory("libot_bringup")
     nav2_share = get_package_share_directory("nav2_bringup")
 
-    localization_launch = os.path.join(
-        nav2_share,
-        "launch",
-        "localization_launch.py",
-    )
     robot_launch = os.path.join(
         bringup_share,
         "launch",
@@ -76,16 +71,38 @@ def generate_launch_description():
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
             }.items(),
         ),
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(localization_launch),
-            launch_arguments={
-                "map": LaunchConfiguration("map"),
-                "params_file": LaunchConfiguration("params_file"),
-                "use_sim_time": LaunchConfiguration("use_sim_time"),
-                "autostart": "True",
-                "use_composition": "False",
-                "use_respawn": "False",
-            }.items(),
+        Node(
+            package="nav2_map_server",
+            executable="map_server",
+            name="map_server",
+            output="screen",
+            parameters=[
+                LaunchConfiguration("params_file"),
+                {
+                    "yaml_filename": LaunchConfiguration("map"),
+                    "use_sim_time": LaunchConfiguration("use_sim_time"),
+                },
+            ],
+        ),
+        Node(
+            package="nav2_amcl",
+            executable="amcl",
+            name="amcl",
+            output="screen",
+            parameters=[
+                LaunchConfiguration("params_file"),
+                {"use_sim_time": LaunchConfiguration("use_sim_time")},
+            ],
+        ),
+        Node(
+            package="nav2_lifecycle_manager",
+            executable="lifecycle_manager",
+            name="lifecycle_manager_localization",
+            output="screen",
+            parameters=[{
+                "autostart": True,
+                "node_names": ["map_server", "amcl"],
+            }],
         ),
         Node(
             package="nav2_controller",
