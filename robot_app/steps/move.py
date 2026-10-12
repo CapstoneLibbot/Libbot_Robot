@@ -227,6 +227,7 @@ class MoveStep(BaseStep):
         nav2_result_code = nav_result.get("nav2_result_code")
         duration_ms = nav_result.get("duration_ms")
         obstacle_info = nav_result.get("obstacle_info")
+        message = nav_result.get("message")
 
         context.set("last_move_target", requested_target)
         if isinstance(requested_target, dict) and requested_target.get("endpoint_id") is not None:
@@ -235,7 +236,7 @@ class MoveStep(BaseStep):
         if final_pose is not None:
             context.set("current_pose", final_pose)
 
-        return {
+        result = {
             "status": "ok" if move_status == "COMPLETED" else "error",
             "type": "MOVE",
             "move_status": move_status,
@@ -251,3 +252,6 @@ class MoveStep(BaseStep):
             "timeout_sec": self.timeout_sec,
             "current_pose": current_pose,
         }
+        if message:
+            result["message"] = message
+        return result

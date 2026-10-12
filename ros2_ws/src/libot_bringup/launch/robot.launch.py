@@ -1,4 +1,5 @@
 import os
+import sys
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -84,7 +85,7 @@ def generate_launch_description():
             }],
         ),
         ExecuteProcess(
-            cmd=["python3", robot_app_path],
+            cmd=[sys.executable, robot_app_path],
             name="libot_workflow_app",
             output="screen",
             condition=IfCondition(start_workflow_app),

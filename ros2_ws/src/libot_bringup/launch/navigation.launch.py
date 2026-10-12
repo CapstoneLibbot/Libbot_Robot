@@ -62,6 +62,16 @@ def generate_launch_description():
             default_value="true",
             description="Start RViz with the standard Nav2 view",
         ),
+        DeclareLaunchArgument(
+            "start_workflow_app",
+            default_value="true",
+            description="Start the Python workflow TCP server for backend commands",
+        ),
+        DeclareLaunchArgument(
+            "robot_app_path",
+            default_value="/ros2_ws/robot_app/main.py",
+            description="Absolute path to robot_app/main.py",
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(robot_launch),
             condition=IfCondition(LaunchConfiguration("use_hardware")),
@@ -69,6 +79,8 @@ def generate_launch_description():
                 "lidar_port": LaunchConfiguration("lidar_port"),
                 "stm32_port": LaunchConfiguration("stm32_port"),
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
+                "start_workflow_app": LaunchConfiguration("start_workflow_app"),
+                "robot_app_path": LaunchConfiguration("robot_app_path"),
             }.items(),
         ),
         Node(
