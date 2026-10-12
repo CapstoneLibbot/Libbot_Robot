@@ -97,18 +97,18 @@ controller_server:
       time_steps: 40
       model_dt: 0.05
       batch_size: 500
-      ax_max: 0.6
-      ax_min: -0.6
-      ay_max: 0.5
-      ay_min: -0.5
-      az_max: 1.2
+      ax_max: 1.0
+      ax_min: -1.0
+      ay_max: 1.0
+      ay_min: -1.0
+      az_max: 2.0
       vx_std: 0.2
       vy_std: 0.2
       wz_std: 0.4
-      vx_max: 0.2
-      vx_min: -0.12
-      vy_max: 0.15
-      wz_max: 0.65
+      vx_max: 0.5
+      vx_min: -0.5
+      vy_max: 0.5
+      wz_max: 1.0
       iteration_count: 1
       prune_distance: 1.0
       transform_tolerance: 0.2
@@ -128,10 +128,18 @@ controller_server:
       - PathAlignCritic
       - PathFollowCritic
       - PathAngleCritic
+      - VelocityDeadbandCritic
       ConstraintCritic:
         enabled: true
         cost_power: 1
         cost_weight: 4.0
+      VelocityDeadbandCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 35.0
+        # Initial chassis deadband; tune this at the ROS boundary on the robot.
+        # Raise these values if TX UART is non-zero but the wheels still stall.
+        deadband_velocities: [0.12, 0.12, 0.30]
       GoalCritic:
         enabled: true
         cost_power: 1
@@ -319,21 +327,21 @@ velocity_smoother:
     scale_velocities: false
     feedback: OPEN_LOOP
     max_velocity:
-    - 0.2
-    - 0.15
-    - 0.65
-    min_velocity:
-    - -0.12
-    - -0.15
-    - -0.65
-    max_accel:
-    - 0.6
     - 0.5
-    - 1.2
-    max_decel:
-    - -0.6
+    - 0.5
+    - 1.0
+    min_velocity:
     - -0.5
-    - -1.2
+    - -0.5
+    - -1.0
+    max_accel:
+    - 1.0
+    - 1.0
+    - 2.0
+    max_decel:
+    - -1.0
+    - -1.0
+    - -2.0
     odom_topic: odom
     odom_duration: 0.1
     deadband_velocity:
