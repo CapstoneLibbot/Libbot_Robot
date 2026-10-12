@@ -26,3 +26,13 @@ class RobotContext:
 
     def update_metadata(self, **kwargs: Any) -> None:
         self.metadata.update(kwargs)
+
+    def update_variables(self, values: Dict[str, Any]) -> None:
+        self.variables.update(values)
+
+    def snapshot(self) -> Dict[str, Any]:
+        return {
+            "variables": dict(self.variables),
+            "step_results": dict(self.step_results),
+            "metadata": dict(self.metadata),
+        }

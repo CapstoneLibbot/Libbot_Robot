@@ -17,7 +17,13 @@
     },
     "scanner": {
       "enabled": true,
-      "device": "camera"
+      "device": "camera",
+      "timeout_sec": 5
+    },
+    "motion_safety": {
+      "enabled": true,
+      "method": "ros_topic",
+      "topic": "/cmd_vel"
     },
     "ui": {
       "enabled": true,

@@ -31,6 +31,7 @@ RUN mkdir -p /ros2_ws/maps
 RUN mkdir -p /ros2_ws/logs
 
 COPY ros2_ws/src /ros2_ws/src
+COPY robot_app /ros2_ws/robot_app
 
 RUN . /opt/ros/jazzy/setup.bash && \
     cd /ros2_ws && \

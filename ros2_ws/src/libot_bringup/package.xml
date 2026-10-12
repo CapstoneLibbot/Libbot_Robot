@@ -15,7 +15,7 @@
   <exec_depend>slam_toolbox</exec_depend>
   <exec_depend>sllidar_ros2</exec_depend>
   <exec_depend>libot_description</exec_depend>
-  <exec_depend>libot_stm32</exec_depend>
+  <exec_depend>libbot_stm32</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
