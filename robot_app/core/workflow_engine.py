@@ -64,14 +64,56 @@ class WorkflowEngine:
             "result": result,
         }
 
-    def run_steps(self, step_defs: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def _step_succeeded(
+        self,
+        step_result: Dict[str, Any],
+    ) -> bool:
+        step_type = step_result.get("step_type")
+        result = step_result.get("result", {})
+
+        if step_type == "MOVE":
+            return (
+                result.get("status") == "ok"
+                and result.get("move_status") == "COMPLETED"
+            )
+
+        if step_type == "SCAN":
+            return result.get("status") == "scanned"
+
+        if step_type == "WAIT":
+            return result.get("status") == "waited"
+
+        return result.get("status") not in {
+            "error",
+            "failed",
+            "timeout",
+        }
+    def run_steps(
+        self,
+        step_defs: List[Dict[str, Any]],
+        fail_fast: bool = True,
+        task_id: Any = None,
+    ) -> Dict[str, Any]:
         results = []
-        for step_def in step_defs:
-            step_result = self.execute_step(step_def)
-            results.append(step_result)
+        failed_step = None
+
+        with self.lock:
+            for step_def in step_defs:
+                step_result = self.execute_step(step_def)
+                results.append(step_result)
+
+                if not self._step_succeeded(step_result):
+                    failed_step = step_result.get("step")
+
+                    if fail_fast:
+                        break
+
         return {
-            "status": "ok",
-            "count": len(results),
+            "status": "error" if failed_step else "ok",
+            "task_id": task_id,
+            "requested_count": len(step_defs),
+            "completed_count": len(results),
+            "failed_step": failed_step,
             "results": results,
         }
 
@@ -92,6 +134,19 @@ class WorkflowEngine:
                 "step_types": sorted(self.STEP_TYPES.keys()),
             }
 
+        if command == "run_workflow":
+            steps = request.get("steps")
+
+            if not isinstance(steps, list):
+                return self._error(
+                    "run_workflow requires a steps array."
+                )
+
+            return self.run_steps(
+                steps,
+                fail_fast=bool(request.get("fail_fast", True)),
+                task_id=request.get("task_id"),
+            )
         if command == "run_step":
             step_def = request.get("step", request if "type" in request else None)
             if not isinstance(step_def, dict):

@@ -96,7 +96,23 @@ class MoveStep(BaseStep):
 
         return None
 
-    def _resolve_target(self, context: RobotContext) -> Optional[Dict[str, Any]]:
+    def _resolve_target(
+        self,
+        context: RobotContext,
+    ) -> Optional[Dict[str, Any]]:
+        
+        if self.target is not None:
+            normalized = self._normalize_target(self.target)
+
+            if normalized is not None:
+                return normalized
+
+        if self.endpoint_id is not None:
+            return {
+                "endpoint_id": self.endpoint_id,
+            }
+
+        # Context chỉ là fallback.
         candidate_keys: Iterable[str] = (
             "destination",
             "target_endpoint_id",
@@ -109,18 +125,12 @@ class MoveStep(BaseStep):
 
         for key in candidate_keys:
             value = context.get(key)
+
             if value is not None:
                 normalized = self._normalize_target(value)
+
                 if normalized is not None:
                     return normalized
-
-        if self.target is not None:
-            normalized = self._normalize_target(self.target)
-            if normalized is not None:
-                return normalized
-
-        if self.endpoint_id is not None:
-            return {"endpoint_id": self.endpoint_id}
 
         return None
 
@@ -138,6 +148,13 @@ class MoveStep(BaseStep):
         destination = dict(target)
         if "endpoint_id" in destination and not destination.get("endpoint_id"):
             return None, "endpoint_id must be a non-empty string."
+
+        if "x" not in destination or "y" not in destination:
+            return (
+                None,
+                "MOVE requires x and y. "
+                "endpoint_id is only used for identification.",
+            )
 
         if "x" in destination or "y" in destination:
             x_value = self._extract_numeric(destination.get("x"), 0.0)
