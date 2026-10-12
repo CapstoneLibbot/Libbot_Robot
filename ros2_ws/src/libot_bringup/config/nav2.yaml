@@ -90,8 +90,10 @@ controller_server:
     general_goal_checker:
       stateful: true
       plugin: nav2_controller::SimpleGoalChecker
-      xy_goal_tolerance: 0.25
-      yaw_goal_tolerance: 0.25
+      # The previous 0.25 m tolerance made short moves (for example 0.229 m)
+      # complete immediately without publishing a motor command.
+      xy_goal_tolerance: 0.05
+      yaw_goal_tolerance: 0.10
     FollowPath:
       plugin: nav2_mppi_controller::MPPIController
       time_steps: 40
