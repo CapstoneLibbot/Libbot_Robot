@@ -11,3 +11,6 @@ class UIController:
 
     def show(self, message: str) -> None:
         print(f"UI: {message}")
+
+    def show_screen(self, screen: str, data: Any = None) -> None:
+        print(f"UI[{screen}]: {data if data is not None else ''}")

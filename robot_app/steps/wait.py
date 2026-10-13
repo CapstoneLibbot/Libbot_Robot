@@ -16,6 +16,10 @@ class WaitStep(BaseStep):
         default_seconds = self.config.get("duration_sec", self._duration_ms_default())
         self.seconds = self._read_float("seconds", default_seconds)
         self.context_key = self.config.get("context_key") or self.config.get("until_context_key")
+        self.wait_for = str(self.config.get("wait_for", "CONTEXT" if self.context_key else "DURATION")).upper()
+        self.event_type = self.config.get("event_type")
+        self.result_variable = self.config.get("result_variable") or self.config.get("result")
+        self.allowed_values = self.config.get("allowed_values")
         default_timeout = 30.0 if self.context_key else self.seconds
         self.timeout_sec = self._read_float("timeout_sec", default_timeout)
         self.poll_interval_sec = self._read_float("poll_interval_sec", 0.1)
@@ -28,11 +32,15 @@ class WaitStep(BaseStep):
         started_at = time.monotonic()
         stop_before = self.motion_safety.stop("wait_start") if self.stop_motion else None
 
-        if self.context_key:
+        event_data = None
+        if self.wait_for == "USER_TOUCH" and self.event_type:
+            status, event_data = self._wait_for_event(context, started_at)
+        elif self.context_key:
             status = self._wait_for_context(context, started_at)
         else:
-            time.sleep(max(self.seconds, 0.0))
-            status = "waited"
+            delay = self.timeout_sec if self.wait_for == "TIMEOUT" and "timeout_sec" in self.config else self.seconds
+            time.sleep(max(delay, 0.0))
+            status = "timeout" if self.wait_for == "TIMEOUT" else "waited"
 
         stop_after = self.motion_safety.stop("wait_end") if self.stop_motion else None
         payload = {
@@ -42,6 +50,8 @@ class WaitStep(BaseStep):
             "timeout_sec": self.timeout_sec,
             "context_key": self.context_key,
             "expected_value": self.expected_value,
+            "event_type": self.event_type,
+            "event_data": event_data,
             "duration_ms": int((time.monotonic() - started_at) * 1000),
             "motion_stop_before": stop_before,
             "motion_stop_after": stop_after,
@@ -49,6 +59,30 @@ class WaitStep(BaseStep):
         context.set("last_wait", self.seconds)
         context.set("last_wait_result", payload)
         return payload
+
+    def _wait_for_event(self, context: RobotContext, started_at: float) -> tuple[str, Any]:
+        deadline = started_at + max(self.timeout_sec, 0.0)
+        while time.monotonic() <= deadline:
+            value = context.pop_event(str(self.event_type))
+            if value is not None:
+                selected = self._event_value(value)
+                if self.allowed_values and selected not in self.allowed_values:
+                    continue
+                if self.result_variable:
+                    context.set(str(self.result_variable), selected)
+                return "event", selected
+            time.sleep(max(self.poll_interval_sec, 0.01))
+        return "timeout", None
+
+    def _event_value(self, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        if self.result_variable in value:
+            return value[self.result_variable]
+        for key in ("value", "action", "selectedBookId", "selected_book_id", "bookId", "book_id", "rating"):
+            if key in value:
+                return value[key]
+        return value
 
     def _wait_for_context(self, context: RobotContext, started_at: float) -> str:
         deadline = started_at + max(self.timeout_sec, 0.0)

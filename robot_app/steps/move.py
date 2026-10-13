@@ -102,14 +102,14 @@ class MoveStep(BaseStep):
     ) -> Optional[Dict[str, Any]]:
         
         if self.target is not None:
-            normalized = self._normalize_target(self.target)
+            normalized = self._normalize_target(self.resolve(context, self.target))
 
             if normalized is not None:
                 return normalized
 
         if self.endpoint_id is not None:
             return {
-                "endpoint_id": self.endpoint_id,
+                "endpoint_id": self.resolve(context, self.endpoint_id),
             }
 
         # Context chỉ là fallback.
