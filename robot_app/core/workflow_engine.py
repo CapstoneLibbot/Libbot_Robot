@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
+import math
 import threading
 import uuid
-import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from urllib import request
 
 from core.context import RobotContext
@@ -114,6 +115,7 @@ class WorkflowEngine:
         step_defs: List[Dict[str, Any]],
         fail_fast: bool = True,
         task_id: Any = None,
+        execution_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         results = []
         failed_step = None
@@ -127,6 +129,8 @@ class WorkflowEngine:
 
         while 0 <= index < len(step_defs) and visited < maximum_steps:
             step_def = step_defs[index]
+            if execution_id is not None:
+                self._set_current_step(execution_id, step_def)
             step_result = self.execute_step(step_def)
             self._apply_output_mapping(step_def, step_result)
             results.append(step_result)
@@ -201,15 +205,46 @@ class WorkflowEngine:
 
     def _run_execution(self, execution_id: str, steps: List[Dict[str, Any]], task_id: Any) -> None:
         with self.lock:
-            self.executions[execution_id] = {"status": "running", "task_id": task_id}
-        result = self.run_steps(steps, task_id=task_id)
+            self.executions[execution_id] = {
+                "status": "running",
+                "task_id": task_id,
+                "current_step": None,
+                "current_step_type": None,
+                "expected_event_type": None,
+                "allowed_values": [],
+            }
+        result = self.run_steps(steps, task_id=task_id, execution_id=execution_id)
         with self.lock:
             self.executions[execution_id] = {
+                **self.executions.get(execution_id, {}),
                 "status": "completed" if result.get("status") == "ok" else "failed",
                 "task_id": task_id,
+                "expected_event_type": None,
+                "allowed_values": [],
                 "result": result,
             }
         self._report_completion(task_id, result)
+
+    def _set_current_step(self, execution_id: str, step_def: Dict[str, Any]) -> None:
+        step_type = str(step_def.get("type", "WAIT")).upper()
+        waits_for_event = (
+            step_type == "WAIT"
+            and str(step_def.get("wait_for", "")).upper() == "USER_TOUCH"
+            and bool(step_def.get("event_type"))
+        )
+        with self.lock:
+            execution = self.executions.get(execution_id)
+            if execution is None:
+                return
+            execution.update({
+                "current_step": str(step_def.get("id", step_def.get("name", ""))),
+                "current_step_type": step_type,
+                "expected_event_type": (
+                    str(step_def.get("event_type")).upper() if waits_for_event else None
+                ),
+                "allowed_values": list(step_def.get("allowed_values") or []) if waits_for_event else [],
+                "result_variable": step_def.get("result_variable") if waits_for_event else None,
+            })
 
     def _report_completion(self, task_id: Any, result: Dict[str, Any]) -> None:
         base_url = str(self.context.get("backend_base_url") or "").rstrip("/")
@@ -277,7 +312,14 @@ class WorkflowEngine:
                     return self._error(f"Execution {execution_id} is already running.")
                 self.context = RobotContext()
                 self.context.update_variables(initial_context)
-                self.executions[execution_id] = {"status": "accepted", "task_id": request.get("task_id")}
+                self.executions[execution_id] = {
+                    "status": "accepted",
+                    "task_id": request.get("task_id"),
+                    "current_step": None,
+                    "current_step_type": None,
+                    "expected_event_type": None,
+                    "allowed_values": [],
+                }
             thread = threading.Thread(
                 target=self._run_execution,
                 args=(execution_id, steps, request.get("task_id")),
@@ -328,17 +370,25 @@ class WorkflowEngine:
         if command == "submit_event":
             event_type = request.get("event_type")
             if not event_type:
-                return self._error("submit_event requires event_type.")
-            self.context.push_event(str(event_type), request.get("data", request.get("value")))
-            return {"status": "ok", "event_type": event_type}
+                return self._error("submit_event requires event_type.", "INVALID_EVENT_DATA")
+            return self._submit_event(
+                str(event_type).upper(),
+                request.get("data", request.get("value")),
+            )
 
         if command == "get_execution":
             execution_id = str(request.get("execution_id", ""))
             with self.lock:
                 execution = self.executions.get(execution_id)
-            if execution is None:
-                return self._error(f"Execution {execution_id or '<missing>'} was not found.")
-            return {"status": "ok", "execution_id": execution_id, "execution": execution}
+                if execution is None:
+                    return self._error(f"Execution {execution_id or '<missing>'} was not found.")
+                execution_snapshot = dict(execution)
+                execution_snapshot["currentStep"] = execution_snapshot.pop("current_step", None)
+                execution_snapshot["currentStepType"] = execution_snapshot.pop("current_step_type", None)
+                execution_snapshot["expectedEventType"] = execution_snapshot.pop("expected_event_type", None)
+                execution_snapshot["allowedValues"] = execution_snapshot.pop("allowed_values", [])
+                execution_snapshot.pop("result_variable", None)
+            return {"status": "ok", "execution_id": execution_id, "execution": execution_snapshot}
 
         if command == "supported_step_types":
             return {
@@ -348,11 +398,94 @@ class WorkflowEngine:
 
         return self._error(f"Unsupported command: {command or '<missing>'}")
 
-    def _error(self, message: str) -> Dict[str, Any]:
-        return {
+    def _submit_event(self, event_type: str, data: Any) -> Dict[str, Any]:
+        with self.lock:
+            active = next(
+                (
+                    (execution_id, execution)
+                    for execution_id, execution in self.executions.items()
+                    if execution.get("status") in {"accepted", "running"}
+                ),
+                None,
+            )
+            if active is None:
+                return self._error(
+                    "There is no active workflow waiting for an event.",
+                    "NO_ACTIVE_EXECUTION",
+                )
+
+            execution_id, execution = active
+            expected_event_type = execution.get("expected_event_type")
+            if not expected_event_type or event_type != expected_event_type:
+                return self._error(
+                    f"Workflow expects event '{expected_event_type or '<none>'}', not '{event_type}'.",
+                    "UNEXPECTED_EVENT",
+                    current_step=execution.get("current_step"),
+                    expected_event_type=expected_event_type,
+                )
+
+            selected = self._event_value(data, execution.get("result_variable"))
+            allowed_values = execution.get("allowed_values") or []
+            if allowed_values and selected not in allowed_values:
+                return self._error(
+                    f"Value '{selected}' is not allowed at step {execution.get('current_step')}.",
+                    "INVALID_EVENT_DATA",
+                    current_step=execution.get("current_step"),
+                    allowed_values=allowed_values,
+                )
+
+            if selected == "START_GUIDANCE" and self.context.get("book_detail") is not None:
+                target_error = self._validate_book_navigation_target()
+                if target_error is not None:
+                    return self._error(
+                        target_error,
+                        "INVALID_NAVIGATION_TARGET",
+                        current_step=execution.get("current_step"),
+                    )
+
+            self.context.push_event(event_type, data)
+            return {
+                "status": "accepted",
+                "execution_id": execution_id,
+                "current_step": execution.get("current_step"),
+                "event_type": event_type,
+            }
+
+    def _event_value(self, data: Any, result_variable: Any = None) -> Any:
+        if not isinstance(data, dict):
+            return data
+        if result_variable and result_variable in data:
+            return data[result_variable]
+        for key in ("value", "action", "selectedBookId", "selected_book_id", "bookId", "book_id", "rating"):
+            if key in data:
+                return data[key]
+        return data
+
+    def _validate_book_navigation_target(self) -> Optional[str]:
+        book_detail = self.context.get("book_detail")
+        location = book_detail.get("location") if isinstance(book_detail, dict) else None
+        endpoint = location.get("endpoint") if isinstance(location, dict) else None
+        if not isinstance(endpoint, dict):
+            return "The selected book has no active navigation endpoint."
+
+        for coordinate in ("x", "y", "theta"):
+            value = endpoint.get(coordinate)
+            try:
+                if value is None or not math.isfinite(float(value)):
+                    raise ValueError
+            except (TypeError, ValueError):
+                return f"The selected book endpoint has an invalid {coordinate} coordinate."
+        return None
+
+    def _error(self, message: str, code: Optional[str] = None, **details: Any) -> Dict[str, Any]:
+        result = {
             "status": "error",
             "message": message,
         }
+        if code:
+            result["code"] = code
+        result.update(details)
+        return result
 
     def _with_default_step_config(self, step_def: Dict[str, Any]) -> Dict[str, Any]:
         enriched = dict(step_def)
