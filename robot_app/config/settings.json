@@ -5,6 +5,11 @@
     "buffer_size": 4096,
     "timeout": 5
   },
+  "runtime": {
+    "id": "real",
+    "backend_url": "http://127.0.0.1:5205",
+    "telemetry_hz": 5
+  },
   "robot": {
     "name": "libot_pi",
     "max_speed": 1.0,

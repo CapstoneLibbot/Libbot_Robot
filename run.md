@@ -7,7 +7,7 @@ tạo nhiều TF publisher và có thể làm bản đồ bị lệch/chồng l�
 
 ```bash
 cd ~/Libbot/Libbot_Robot
-docker exec -it libot_ros2 bash
+docker exec -it libot_ros2_hardware bash
 
 source /opt/ros/jazzy/setup.bash
 cd /ros2_ws
@@ -57,8 +57,8 @@ trùng LiDAR, STM32 bridge và robot state publisher.
 
 ```bash
 cd ~/Libbot/Libbot_Robot
-docker compose -f docker/compose.yaml up -d --build
-docker exec -it libot_ros2 bash
+docker compose -f docker/compose.yaml --profile hardware up -d --build
+docker exec -it libot_ros2_hardware bash
 
 source /opt/ros/jazzy/setup.bash
 cd /ros2_ws
@@ -85,7 +85,7 @@ Khi RViz mở:
 Kiểm tra nhanh trong terminal khác nếu robot không chạy:
 
 ```bash
-docker exec -it libot_ros2 bash
+docker exec -it libot_ros2_hardware bash
 source /opt/ros/jazzy/setup.bash
 source /ros2_ws/install/setup.bash
 

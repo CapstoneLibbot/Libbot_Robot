@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import time
 import uuid
+import threading
 from typing import Any, Dict, Optional
 
 
@@ -15,6 +16,8 @@ class NavigationController:
             "action_name",
             "/navigate_to_pose",
         )
+        self._goal_handle = None
+        self._goal_lock = threading.RLock()
 
     def navigate(self, goal: Dict[str, Any]) -> Dict[str, Any]:
         started_at = time.monotonic()
@@ -115,6 +118,9 @@ class NavigationController:
                     "Nav2 rejected the navigation goal.",
                 )
 
+            with self._goal_lock:
+                self._goal_handle = goal_handle
+
             result_future = goal_handle.get_result_async()
 
             rclpy.spin_until_future_complete(
@@ -174,10 +180,18 @@ class NavigationController:
                 str(exc),
             )
         finally:
+            with self._goal_lock:
+                self._goal_handle = None
             node.destroy_node()
 
     def stop(self) -> None:
-        pass
+        with self._goal_lock:
+            goal_handle = self._goal_handle
+        if goal_handle is not None:
+            try:
+                goal_handle.cancel_goal_async()
+            except Exception:
+                pass
 
     def _result(
         self,

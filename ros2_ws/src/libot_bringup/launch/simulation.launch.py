@@ -17,7 +17,7 @@ def generate_launch_description():
         description_share, "urdf", "libot.urdf.xacro"
     )
     world_file = os.path.join(
-        description_share, "worlds", "library.sdf"
+        description_share, "worlds", "library.generated.sdf"
     )
     bridge_file = os.path.join(
         bringup_share, "config", "ros_gz_bridge.yaml"
@@ -41,7 +41,7 @@ def generate_launch_description():
                 os.path.join(ros_gz_share, "launch", "gz_sim.launch.py")
             ),
             launch_arguments={
-                "gz_args": ["-r -v 4 ", world_file],
+                "gz_args": ["-s -r -v 4 ", world_file],
                 "on_exit_shutdown": "true",
             }.items(),
         ),
@@ -52,8 +52,8 @@ def generate_launch_description():
             arguments=[
                 "-name", "libot",
                 "-topic", "robot_description",
-                "-x", "0",
-                "-y", "0",
+                "-x", "-0.638",
+                "-y", "-0.324",
                 "-z", "0.15",
             ],
             output="screen",

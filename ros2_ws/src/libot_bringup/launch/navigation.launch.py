@@ -7,6 +7,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -51,6 +52,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "use_sim_time",
             default_value="false",
+        ),
+        DeclareLaunchArgument(
+            "amcl_tf_broadcast",
+            default_value="true",
+            description="Let AMCL publish map to odom (disable when simulation uses ground truth TF)",
         ),
         DeclareLaunchArgument(
             "use_hardware",
@@ -103,7 +109,12 @@ def generate_launch_description():
             output="screen",
             parameters=[
                 LaunchConfiguration("params_file"),
-                {"use_sim_time": LaunchConfiguration("use_sim_time")},
+                {
+                    "use_sim_time": LaunchConfiguration("use_sim_time"),
+                    "tf_broadcast": ParameterValue(
+                        LaunchConfiguration("amcl_tf_broadcast"), value_type=bool
+                    ),
+                },
             ],
         ),
         Node(
