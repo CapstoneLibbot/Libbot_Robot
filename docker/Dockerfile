@@ -10,9 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-jazzy-nav2-simple-commander \
     ros-jazzy-slam-toolbox \
     ros-jazzy-robot-localization \
-    ros-jazzy-tf2-ros \
-    ros-jazzy-tf2-tools \
-    ros-jazzy-tf-transformations \
+    ros-jazzy-ros-gz \
+    ros-jazzy-teleop-twist-keyboard \
     ros-jazzy-rviz2 \
     ros-jazzy-xacro \
     ros-jazzy-robot-state-publisher \
