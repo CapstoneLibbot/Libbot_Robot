@@ -374,6 +374,7 @@ class WorkflowEngine:
             return self._submit_event(
                 str(event_type).upper(),
                 request.get("data", request.get("value")),
+                str(request.get("execution_id") or ""),
             )
 
         if command == "get_execution":
@@ -398,16 +399,20 @@ class WorkflowEngine:
 
         return self._error(f"Unsupported command: {command or '<missing>'}")
 
-    def _submit_event(self, event_type: str, data: Any) -> Dict[str, Any]:
+    def _submit_event(self, event_type: str, data: Any, requested_execution_id: str = "") -> Dict[str, Any]:
         with self.lock:
-            active = next(
-                (
-                    (execution_id, execution)
-                    for execution_id, execution in self.executions.items()
-                    if execution.get("status") in {"accepted", "running"}
-                ),
-                None,
-            )
+            if requested_execution_id:
+                candidate = self.executions.get(requested_execution_id)
+                active = (requested_execution_id, candidate) if candidate and candidate.get("status") in {"accepted", "running"} else None
+            else:
+                active = next(
+                    (
+                        (execution_id, execution)
+                        for execution_id, execution in self.executions.items()
+                        if execution.get("status") in {"accepted", "running"}
+                    ),
+                    None,
+                )
             if active is None:
                 return self._error(
                     "There is no active workflow waiting for an event.",
@@ -425,6 +430,13 @@ class WorkflowEngine:
                 )
 
             selected = self._event_value(data, execution.get("result_variable"))
+            if event_type == "BOOK_SELECTED":
+                expected_book_id = self.context.get("book_id")
+                if expected_book_id and str(selected) != str(expected_book_id):
+                    return self._error(
+                        "Selected book does not match the book assigned to this execution.",
+                        "INVALID_EVENT_DATA",
+                    )
             allowed_values = execution.get("allowed_values") or []
             if allowed_values and selected not in allowed_values:
                 return self._error(

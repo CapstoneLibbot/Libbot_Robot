@@ -85,6 +85,55 @@ class FlowOneEngineTests(unittest.TestCase):
         self.assertIsNotNone(execution)
         self.assertEqual("completed", execution["execution"]["status"])
 
+    def test_book_selected_event_is_routed_to_execution_and_assigned_book(self):
+        response = self.engine.handle_request({
+            "command": "start_workflow",
+            "execution_id": "book-flow-1",
+            "task_id": "book-task-1",
+            "initial_context": {"book_id": "book-123"},
+            "steps": [{
+                "id": "S30",
+                "name": "S30",
+                "type": "WAIT",
+                "wait_for": "USER_TOUCH",
+                "event_type": "BOOK_SELECTED",
+                "result_variable": "selected_book_id",
+                "timeout_sec": 3,
+            }],
+        })
+        self.assertEqual("accepted", response["status"])
+
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline:
+            execution = self.engine.handle_request({"command": "get_execution", "execution_id": "book-flow-1"})
+            if execution["execution"].get("expectedEventType") == "BOOK_SELECTED":
+                break
+            time.sleep(0.01)
+
+        wrong_execution = self.engine.handle_request({
+            "command": "submit_event",
+            "execution_id": "another-flow",
+            "event_type": "BOOK_SELECTED",
+            "data": {"selected_book_id": "book-123"},
+        })
+        self.assertEqual("error", wrong_execution["status"])
+
+        wrong_book = self.engine.handle_request({
+            "command": "submit_event",
+            "execution_id": "book-flow-1",
+            "event_type": "BOOK_SELECTED",
+            "data": {"selected_book_id": "book-456"},
+        })
+        self.assertEqual("INVALID_EVENT_DATA", wrong_book["code"])
+
+        selected = self.engine.handle_request({
+            "command": "submit_event",
+            "execution_id": "book-flow-1",
+            "event_type": "BOOK_SELECTED",
+            "data": {"selected_book_id": "book-123"},
+        })
+        self.assertEqual("accepted", selected["status"])
+
     def test_end_step_is_supported(self):
         response = self.engine.handle_request({
             "command": "run_step",

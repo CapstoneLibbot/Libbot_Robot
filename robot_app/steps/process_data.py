@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Dict, Optional
 from urllib import parse, request
 
@@ -30,6 +31,28 @@ class ProcessDataStep(BaseStep):
                 self._require_base_url(base_url)
                 book_id = parse.quote(str(payload.get("book_id", "")), safe="")
                 data = self._json_request(f"{base_url}/api/book-guidance/books/{book_id}")
+                selected_item_id = context.get("book_item_id")
+                if selected_item_id:
+                    copies = data.get("bookItems", []) if isinstance(data, dict) else []
+                    selected_item = next(
+                        (item for item in copies if str(item.get("id", "")).lower() == str(selected_item_id).lower()),
+                        None,
+                    )
+                    if selected_item is None or str(selected_item.get("status", "")).lower() != "available":
+                        raise ValueError("The selected book copy is missing or is no longer available.")
+                    location = selected_item.get("location")
+                    endpoint = location.get("endpoint") if isinstance(location, dict) else None
+                    if not isinstance(endpoint, dict):
+                        raise ValueError("The selected book copy has no navigation endpoint.")
+                    try:
+                        pose = [float(endpoint[key]) for key in ("x", "y", "theta")]
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise ValueError("The selected book copy has an invalid navigation endpoint.") from exc
+                    if not all(math.isfinite(value) for value in pose):
+                        raise ValueError("The selected book copy has an invalid navigation endpoint.")
+                    data = dict(data)
+                    data["location"] = location
+                    data["selectedBookItem"] = selected_item
             elif self.operation == "SAVE_RATING":
                 self._require_base_url(base_url)
                 data = self._json_request(
