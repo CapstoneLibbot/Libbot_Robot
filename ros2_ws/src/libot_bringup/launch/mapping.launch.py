@@ -43,6 +43,12 @@ def generate_launch_description():
         ),
 
         DeclareLaunchArgument(
+            'use_sim_time',
+            default_value='false',
+            description='Use the ROS simulated clock when mapping in Gazebo.',
+        ),
+
+        DeclareLaunchArgument(
             'lidar_port',
             default_value='/dev/rplidar',
             description='Serial device used by the RPLIDAR'
@@ -84,7 +90,7 @@ def generate_launch_description():
                     PythonLaunchDescriptionSource(slam_launch),
                     launch_arguments={
                         'slam_params_file': slam_params_file,
-                        'use_sim_time': 'false',
+                        'use_sim_time': LaunchConfiguration('use_sim_time'),
                     }.items()
                 )
             ]

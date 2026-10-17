@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import threading
 import uuid
 from typing import Any, Dict, List, Optional
@@ -247,7 +248,9 @@ class WorkflowEngine:
             })
 
     def _report_completion(self, task_id: Any, result: Dict[str, Any]) -> None:
-        base_url = str(self.context.get("backend_base_url") or "").rstrip("/")
+        base_url = str(
+            os.getenv("LIBOT_BACKEND_URL") or self.context.get("backend_base_url") or ""
+        ).strip().rstrip("/")
         if not base_url or not task_id:
             return
         body = json.dumps({

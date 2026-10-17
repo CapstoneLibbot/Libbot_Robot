@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import math
+import os
+import threading
 import time
 import uuid
-import threading
 from typing import Any, Dict, Optional
 
 
@@ -12,6 +13,11 @@ class NavigationController:
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None):
         self.settings = settings or {}
+        self.runtime_id = os.getenv(
+            "LIBOT_RUNTIME_ID",
+            str(self.settings.get("runtime_id", "real")),
+        ).strip().lower()
+        self.use_sim_time = self.runtime_id == "sim"
         self.action_name = self.settings.get(
             "action_name",
             "/navigate_to_pose",
@@ -37,6 +43,7 @@ class NavigationController:
             from action_msgs.msg import GoalStatus
             from nav2_msgs.action import NavigateToPose
             from rclpy.action import ActionClient
+            from rclpy.parameter import Parameter
         except ImportError as exc:
             return self._result(
                 "FAILED",
@@ -60,17 +67,29 @@ class NavigationController:
         if not rclpy.ok():
             rclpy.init(args=None)
 
-        node = rclpy.create_node(
-            f"libot_navigation_{uuid.uuid4().hex[:8]}"
-        )
-
-        action_client = ActionClient(
-            node,
-            NavigateToPose,
-            self.action_name,
-        )
-
+        node = None
         try:
+            node = rclpy.create_node(
+                f"libot_navigation_{uuid.uuid4().hex[:8]}",
+                parameter_overrides=[
+                    Parameter("use_sim_time", value=self.use_sim_time)
+                ],
+            )
+
+            if self.use_sim_time and not self._wait_for_sim_clock(node, rclpy):
+                return self._result(
+                    "FAILED",
+                    "SIM_CLOCK_UNAVAILABLE",
+                    started_at,
+                    "No nonzero ROS simulated time was received on /clock within 10 seconds.",
+                )
+
+            action_client = ActionClient(
+                node,
+                NavigateToPose,
+                self.action_name,
+            )
+
             if not action_client.wait_for_server(timeout_sec=10.0):
                 return self._result(
                     "FAILED",
@@ -182,7 +201,17 @@ class NavigationController:
         finally:
             with self._goal_lock:
                 self._goal_handle = None
-            node.destroy_node()
+            if node is not None:
+                node.destroy_node()
+
+    @staticmethod
+    def _wait_for_sim_clock(node: Any, rclpy: Any, timeout_sec: float = 10.0) -> bool:
+        deadline = time.monotonic() + timeout_sec
+        while rclpy.ok() and time.monotonic() < deadline:
+            if node.get_clock().now().nanoseconds > 0:
+                return True
+            rclpy.spin_once(node, timeout_sec=min(0.1, deadline - time.monotonic()))
+        return node.get_clock().now().nanoseconds > 0
 
     def stop(self) -> None:
         with self._goal_lock:

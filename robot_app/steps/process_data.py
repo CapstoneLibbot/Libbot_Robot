@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from typing import Any, Dict, Optional
 from urllib import parse, request
 
@@ -21,7 +22,7 @@ class ProcessDataStep(BaseStep):
 
     def execute(self, context: RobotContext) -> Any:
         payload = self.resolve(context, self.payload)
-        base_url = str(self.backend_base_url or context.get("backend_base_url") or "").rstrip("/")
+        base_url = self._resolve_backend_base_url(context)
         try:
             if self.operation == "SEARCH_BOOK":
                 self._require_base_url(base_url)
@@ -83,6 +84,19 @@ class ProcessDataStep(BaseStep):
     def _require_base_url(self, base_url: str) -> None:
         if not base_url:
             raise ValueError("backend_base_url is required for this PROCESS_DATA action.")
+
+    def _resolve_backend_base_url(self, context: RobotContext) -> str:
+        # The API request host may be `localhost`, which refers to the robot
+        # container when the simulation runs in Docker. Prefer the URL configured
+        # for robot-to-backend traffic, then fall back to the workflow context.
+        for candidate in (
+            self.backend_base_url,
+            os.getenv("LIBOT_BACKEND_URL"),
+            context.get("backend_base_url"),
+        ):
+            if candidate is not None and str(candidate).strip():
+                return str(candidate).strip().rstrip("/")
+        return ""
 
     def _error(self, message: str) -> Dict[str, Any]:
         return {"status": "error", "type": "PROCESS_DATA", "action": self.operation, "message": message}

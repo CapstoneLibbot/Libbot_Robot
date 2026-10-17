@@ -19,7 +19,10 @@ class RobotRuntimeGateway:
     def __init__(self, settings: Optional[Dict[str, Any]] = None):
         config = settings or {}
         runtime = config.get("runtime", {})
-        self.runtime_id = os.getenv("LIBOT_RUNTIME_ID", runtime.get("id", "real"))
+        self.runtime_id = str(
+            os.getenv("LIBOT_RUNTIME_ID", runtime.get("id", "real"))
+        ).strip().lower()
+        self.use_sim_time = self.runtime_id == "sim"
         self.backend_url = os.getenv(
             "LIBOT_BACKEND_URL",
             runtime.get("backend_url", "http://127.0.0.1:5205"),
@@ -61,6 +64,7 @@ class RobotRuntimeGateway:
             from nav_msgs.msg import OccupancyGrid, Odometry, Path
             from rclpy.action import ActionClient
             from rclpy.executors import MultiThreadedExecutor
+            from rclpy.parameter import Parameter
             from sensor_msgs.msg import BatteryState
             from tf2_ros import Buffer, TransformListener
         except ImportError as exc:
@@ -69,7 +73,12 @@ class RobotRuntimeGateway:
 
         if not rclpy.ok():
             rclpy.init(args=None)
-        self._node = rclpy.create_node(f"libot_runtime_gateway_{self.runtime_id}")
+        self._node = rclpy.create_node(
+            f"libot_runtime_gateway_{self.runtime_id}",
+            parameter_overrides=[
+                Parameter("use_sim_time", value=self.use_sim_time)
+            ],
+        )
         self._initial_pose_pub = self._node.create_publisher(
             PoseWithCovarianceStamped, "/initialpose", 10
         )
@@ -185,7 +194,11 @@ class RobotRuntimeGateway:
             with self._lock:
                 self._map = None
             self._mapping_process = subprocess.Popen(
-                ["ros2", "launch", "libot_bringup", "mapping.launch.py", "use_hardware:=false"],
+                [
+                    "ros2", "launch", "libot_bringup", "mapping.launch.py",
+                    "use_hardware:=false",
+                    f"use_sim_time:={'true' if self.use_sim_time else 'false'}",
+                ],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
@@ -209,7 +222,14 @@ class RobotRuntimeGateway:
             with self._lock:
                 initial_pose = dict(self.pose)
             self._navigation_process = subprocess.Popen(
-                ["ros2", "launch", "libot_bringup", "navigation.launch.py", f"map:={path}", "use_hardware:=false", "start_workflow_app:=false", "use_rviz:=false"],
+                [
+                    "ros2", "launch", "libot_bringup", "navigation.launch.py",
+                    f"map:={path}",
+                    "use_hardware:=false",
+                    "start_workflow_app:=false",
+                    "use_rviz:=false",
+                    f"use_sim_time:={'true' if self.use_sim_time else 'false'}",
+                ],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
@@ -352,6 +372,10 @@ class RobotRuntimeGateway:
             return self._failure("Navigation target requires finite x, y and theta values.")
         if self._node is None or self._action_client is None:
             return self._failure(self.error or "ROS is unavailable.")
+        if self.use_sim_time and self._node.get_clock().now().nanoseconds <= 0:
+            return self._failure(
+                "SIM_CLOCK_UNAVAILABLE: No nonzero ROS simulated time has been received on /clock."
+            )
         with self._lock:
             if self.navigation_state in {"SENDING", "NAVIGATING", "CANCELING"}:
                 return self._failure("A navigation goal is already active.")
