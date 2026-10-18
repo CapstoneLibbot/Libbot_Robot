@@ -55,6 +55,8 @@ class RobotRuntimeGateway:
         self._last_manual_command = 0.0
         self._mapping_process: Optional[subprocess.Popen[Any]] = None
         self._navigation_process: Optional[subprocess.Popen[Any]] = None
+        self._navigation_map_path: Optional[str] = None
+        self._resume_navigation_after_manual_stop = False
 
     def start(self) -> None:
         try:
@@ -129,7 +131,22 @@ class RobotRuntimeGateway:
             self._publish_stop()
             with self._lock:
                 self._manual_active = False
-            return {"status": "accepted"}
+                resume_navigation = bool(payload.get("resume_navigation", False)) and self._resume_navigation_after_manual_stop
+                map_path = self._navigation_map_path
+                if resume_navigation:
+                    self._resume_navigation_after_manual_stop = False
+            if not resume_navigation:
+                return {"status": "accepted", "navigation_active": False, "navigation_restarted": False}
+            if not map_path:
+                with self._lock:
+                    self._resume_navigation_after_manual_stop = True
+                return self._failure("Nav2 cannot be restarted because no previously used map path is available.")
+            result = self._start_navigation_mode(map_path)
+            if result.get("status") != "accepted":
+                with self._lock:
+                    self._resume_navigation_after_manual_stop = True
+                return result
+            return {"status": "accepted", "navigation_active": True, "navigation_restarted": True}
         if command == "start_mapping":
             return self._start_mapping()
         if command == "stop_mapping":
@@ -145,7 +162,9 @@ class RobotRuntimeGateway:
             self._terminate_process(self._navigation_process)
             self._navigation_process = None
             self._publish_stop()
-            return {"status": "accepted"}
+            with self._lock:
+                self._resume_navigation_after_manual_stop = bool(self._navigation_map_path)
+            return {"status": "accepted", "navigation_active": False}
         return None
 
     def _manual_velocity(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -206,6 +225,8 @@ class RobotRuntimeGateway:
             if self._mapping_process.poll() is not None:
                 self._mapping_process = None
                 return self._failure("Could not start the SLAM mapping launch.")
+            with self._lock:
+                self._resume_navigation_after_manual_stop = False
             return {"status": "accepted"}
         except OSError as exc:
             return self._failure(f"Could not start SLAM mapping: {exc}")
@@ -230,17 +251,26 @@ class RobotRuntimeGateway:
                     "use_rviz:=false",
                     f"use_sim_time:={'true' if self.use_sim_time else 'false'}",
                 ],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
                 start_new_session=True,
             )
             time.sleep(0.25)
             if self._navigation_process.poll() is not None:
+                return_code = self._navigation_process.returncode
                 self._navigation_process = None
-                return self._failure("Could not start Nav2 with the selected map.")
+                return self._failure(
+                    f"Nav2 launch exited immediately with code {return_code}; check the robot container logs."
+                )
             if self._action_client is None or not self._action_client.wait_for_server(timeout_sec=8.0):
                 self._terminate_process(self._navigation_process)
                 self._navigation_process = None
-                return self._failure("Nav2 action server did not become available after startup.")
+                return self._failure(
+                    "Nav2 action server /navigate_to_pose did not become available within 8 seconds; "
+                    "the launch was stopped. Check the robot container logs."
+                )
+            with self._lock:
+                self._navigation_map_path = str(path)
+                self._resume_navigation_after_manual_stop = False
             threading.Thread(target=self._seed_nav2_pose, args=(initial_pose,), daemon=True).start()
             return {"status": "accepted"}
         except OSError as exc:
