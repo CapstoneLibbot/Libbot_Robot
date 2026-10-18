@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib import request
+from urllib.error import HTTPError
 
 
 class RobotRuntimeGateway:
@@ -49,6 +50,7 @@ class RobotRuntimeGateway:
         self._lock = threading.RLock()
         self._running = False
         self._last_telemetry_error_log = 0.0
+        self._last_map_error_log = 0.0
         self._map: Optional[Dict[str, Any]] = None
         self._last_map_post = 0.0
         self._manual_active = False
@@ -102,6 +104,7 @@ class RobotRuntimeGateway:
         self._running = True
         threading.Thread(target=self._executor.spin, daemon=True).start()
         threading.Thread(target=self._telemetry_loop, daemon=True).start()
+        threading.Thread(target=self._map_retry_loop, daemon=True).start()
 
     def stop(self) -> None:
         self._running = False
@@ -583,9 +586,9 @@ class RobotRuntimeGateway:
             try:
                 self._post_map(grid)
             except Exception as exc:
-                if now - self._last_telemetry_error_log >= 5.0:
+                if now - self._last_map_error_log >= 5.0:
                     print(f"Map delivery failed: {exc}", flush=True)
-                    self._last_telemetry_error_log = now
+                    self._last_map_error_log = now
 
     def _post_map(self, grid: Dict[str, Any]) -> None:
         payload = {
@@ -604,8 +607,12 @@ class RobotRuntimeGateway:
             method="POST",
             headers={"Content-Type": "application/json"},
         )
-        with request.urlopen(req, timeout=10.0):
-            pass
+        try:
+            with request.urlopen(req, timeout=10.0) as response:
+                response.read()
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"BE rejected occupancy map (HTTP {exc.code}): {body}") from exc
 
     def _on_plan(self, message: Any) -> None:
         points = [{"x": float(p.pose.position.x), "y": float(p.pose.position.y)} for p in message.poses]
@@ -629,6 +636,25 @@ class RobotRuntimeGateway:
                     print(f"Telemetry delivery failed: {exc}", flush=True)
                     self._last_telemetry_error_log = now
             time.sleep(max(0.0, interval - (time.monotonic() - started)))
+
+    def _map_retry_loop(self) -> None:
+        while self._running:
+            self._retry_map_delivery()
+            time.sleep(1.0)
+
+    def _retry_map_delivery(self) -> None:
+        now = time.monotonic()
+        with self._lock:
+            if self._map is None or now - self._last_map_post < 5.0:
+                return
+            grid = dict(self._map)
+            self._last_map_post = now
+        try:
+            self._post_map(grid)
+        except Exception as exc:
+            if now - self._last_map_error_log >= 5.0:
+                print(f"Map delivery retry failed: {exc}", flush=True)
+                self._last_map_error_log = now
 
     def _post_telemetry(self) -> None:
         with self._lock:
