@@ -17,6 +17,8 @@ from urllib.error import HTTPError
 class RobotRuntimeGateway:
     """ROS-facing runtime adapter used by both Gazebo and the physical robot."""
 
+    BATTERY_TIMEOUT_SEC = 3.0
+
     def __init__(self, settings: Optional[Dict[str, Any]] = None):
         config = settings or {}
         runtime = config.get("runtime", {})
@@ -32,6 +34,7 @@ class RobotRuntimeGateway:
         self.pose = {"x": 0.0, "y": 0.0, "yaw": 0.0}
         self.twist = {"linearX": 0.0, "linearY": 0.0, "angularZ": 0.0}
         self.battery: Optional[float] = None
+        self._last_battery_monotonic: Optional[float] = None
         self.localization_state = "UNLOCALIZED"
         self.navigation_state = "IDLE"
         self.active_goal_id: Optional[str] = None
@@ -621,8 +624,27 @@ class RobotRuntimeGateway:
 
     def _on_battery(self, message: Any) -> None:
         percentage = float(message.percentage)
+        if 0.0 <= percentage <= 1.0:
+            percentage *= 100.0
+
         with self._lock:
-            self.battery = percentage * 100.0 if 0.0 <= percentage <= 1.0 else percentage
+            if (not math.isfinite(percentage)
+                    or not 0.0 <= percentage <= 100.0
+                    or getattr(message, "present", True) is False):
+                self.battery = None
+                self._last_battery_monotonic = None
+                return
+
+            self.battery = percentage
+            self._last_battery_monotonic = time.monotonic()
+
+    def _battery_for_telemetry(self, now: Optional[float] = None) -> Optional[float]:
+        if self.battery is None or self._last_battery_monotonic is None:
+            return None
+        current = time.monotonic() if now is None else now
+        if current - self._last_battery_monotonic > self.BATTERY_TIMEOUT_SEC:
+            return None
+        return self.battery
 
     def _telemetry_loop(self) -> None:
         interval = 1.0 / self.telemetry_hz
@@ -664,7 +686,7 @@ class RobotRuntimeGateway:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "pose": dict(self.pose),
                 "twist": dict(self.twist),
-                "battery": self.battery,
+                "battery": self._battery_for_telemetry(),
                 "localizationState": self.localization_state,
                 "navigationState": self.navigation_state,
                 "activeGoalId": self.active_goal_id,
