@@ -2,6 +2,7 @@ x-ros2-common: &ros2-common
   build:
     context: ..
     dockerfile: docker/Dockerfile
+    network: host
   network_mode: host
   restart: unless-stopped
   volumes:
