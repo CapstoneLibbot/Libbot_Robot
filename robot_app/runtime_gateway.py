@@ -237,6 +237,10 @@ class RobotRuntimeGateway:
             if self._navigation_process.poll() is not None:
                 self._navigation_process = None
                 return self._failure("Could not start Nav2 with the selected map.")
+            if self._action_client is None or not self._action_client.wait_for_server(timeout_sec=8.0):
+                self._terminate_process(self._navigation_process)
+                self._navigation_process = None
+                return self._failure("Nav2 action server did not become available after startup.")
             threading.Thread(target=self._seed_nav2_pose, args=(initial_pose,), daemon=True).start()
             return {"status": "accepted"}
         except OSError as exc:
