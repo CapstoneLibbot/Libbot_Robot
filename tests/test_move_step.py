@@ -2,7 +2,7 @@ from core.context import RobotContext
 from steps.move import MoveStep
 
 
-def test_move_step_uses_runtime_destination_and_sets_move_status():
+def test_move_step_uses_runtime_destination_and_sets_move_status(monkeypatch):
     context = RobotContext()
     context.set("current_pose", {"x": 0.0, "y": 0.0, "theta": 0.0})
     context.set("destination", {"x": 4.5, "y": 3.0})
@@ -14,13 +14,24 @@ def test_move_step_uses_runtime_destination_and_sets_move_status():
         "obstacle_policy": "WAIT_RESUME",
     })
 
+    def navigate(_self, goal):
+        assert goal["target"]["x"] == 4.5
+        assert goal["target"]["y"] == 3.0
+        return {
+            "move_status": "COMPLETED",
+            "final_pose": {"x": 4.5, "y": 3.0, "theta": 0.0},
+            "nav2_result_code": "SUCCEEDED",
+            "duration_ms": 1,
+        }
+
+    monkeypatch.setattr("steps.move.NavigationController.navigate", navigate)
     result = step.execute(context)
 
     assert result["move_status"] == "COMPLETED"
     assert result["type"] == "MOVE"
     assert result["target"]["x"] == 4.5
     assert result["target"]["theta"] == 0.0
-    assert result["nav2_result_code"] == "SIMULATED_GOAL_REACHED"
+    assert result["nav2_result_code"] == "SUCCEEDED"
     assert context.get("move_status") == "COMPLETED"
     assert context.get("last_move_target")["x"] == 4.5
 
@@ -42,7 +53,7 @@ def test_move_step_fails_when_target_is_missing():
     assert context.get("move_status") == "FAILED"
 
 
-def test_move_step_accepts_endpoint_id_goal():
+def test_move_step_rejects_endpoint_id_without_resolved_pose():
     context = RobotContext()
     context.set("current_pose", {"x": 0.0, "y": 0.0, "theta": 0.0})
 
@@ -55,15 +66,13 @@ def test_move_step_accepts_endpoint_id_goal():
 
     result = step.execute(context)
 
-    assert result["status"] == "ok"
-    assert result["move_status"] == "COMPLETED"
-    assert result["target"] == {"endpoint_id": "SHELF_A1"}
-    assert result["timeout_sec"] == 30
-    assert result["nav2_result_code"] == "SIMULATED_ENDPOINT_ACCEPTED"
-    assert context.get("target_endpoint_id") == "SHELF_A1"
+    assert result["status"] == "error"
+    assert result["move_status"] == "FAILED"
+    assert result["nav2_result_code"] == "INVALID_INPUT"
+    assert "requires x and y" in result["message"]
 
 
-def test_move_step_accepts_path_id_goal():
+def test_move_step_rejects_path_id_without_route_resolver():
     context = RobotContext()
     context.set("current_pose", {"x": 0.0, "y": 0.0, "theta": 0.0})
 
@@ -76,8 +85,7 @@ def test_move_step_accepts_path_id_goal():
 
     result = step.execute(context)
 
-    assert result["status"] == "ok"
-    assert result["move_status"] == "COMPLETED"
-    assert result["target"] == {"path_id": "PATROL_ROUTE_1"}
-    assert result["scan_while_moving"] is True
-    assert result["nav2_result_code"] == "SIMULATED_PATH_COMPLETED"
+    assert result["status"] == "error"
+    assert result["move_status"] == "FAILED"
+    assert result["nav2_result_code"] == "INVALID_INPUT"
+    assert "route resolver" in result["message"]

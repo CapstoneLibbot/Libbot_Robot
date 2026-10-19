@@ -25,8 +25,8 @@ def main() -> None:
     if os.getenv("LIBOT_TCP_PORT"):
         tcp_settings["port"] = int(os.environ["LIBOT_TCP_PORT"])
     server = TCPServer(tcp_settings)
-    workflow = WorkflowEngine(settings, server)
     runtime_gateway = RobotRuntimeGateway(settings)
+    workflow = WorkflowEngine(settings, server, runtime_gateway)
 
     def handle_request(payload: object) -> object:
         runtime_response = runtime_gateway.handle_request(payload)

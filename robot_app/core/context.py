@@ -23,6 +23,14 @@ class RobotContext:
         with self.lock:
             return self.variables.get(key, default)
 
+    def pop_next(self, key: str) -> Any:
+        with self.lock:
+            value = self.variables.get(key)
+            if not isinstance(value, list) or not value:
+                return None
+            item = value.pop(0)
+            return item
+
     def set_step_result(self, step_name: str, value: Any) -> None:
         with self.lock:
             self.step_results[step_name] = value

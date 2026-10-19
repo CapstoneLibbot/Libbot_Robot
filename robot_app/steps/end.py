@@ -11,7 +11,7 @@ class EndStep(BaseStep):
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         super().__init__(config)
-        self.result_status = self.config.get("result_status", "SUCCEEDED")
+        self.result_status = self.config.get("result_status", self.config.get("status", "SUCCEEDED"))
         self.message = self.config.get("message")
         self.output = self.config.get("output", {})
 

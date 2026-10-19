@@ -10,10 +10,12 @@ x-ros2-common: &ros2-common
     - ../robot_app:/ros2_ws/robot_app
     - ../maps:/ros2_ws/maps
     - ../logs:/ros2_ws/logs
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
   environment:
     ROS_DOMAIN_ID: "0"
     LIBOT_BACKEND_URL: "${LIBOT_BACKEND_URL:-http://127.0.0.1:5205}"
-
+    DISPLAY: "${DISPLAY:-:0}"
+    QT_X11_NO_MITSHM: "1"
 services:
   ros2-hardware:
     <<: *ros2-common
@@ -22,6 +24,7 @@ services:
     devices:
       - "/dev/rplidar:/dev/rplidar"
       - "/dev/serial0:/dev/serial0"
+      - "/dev/snd:/dev/snd"
     command: >-
       bash -lc "source /opt/ros/jazzy/setup.bash && source /ros2_ws/install/setup.bash &&
       ros2 launch libot_bringup robot_control.launch.py"

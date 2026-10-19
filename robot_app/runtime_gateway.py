@@ -59,6 +59,8 @@ class RobotRuntimeGateway:
         self._navigation_process: Optional[subprocess.Popen[Any]] = None
         self._navigation_map_path: Optional[str] = None
         self._resume_navigation_after_manual_stop = False
+        self._patrol_observation_condition = threading.Condition(self._lock)
+        self._patrol_observation: Optional[Any] = None
 
     def start(self) -> None:
         try:
@@ -70,6 +72,7 @@ class RobotRuntimeGateway:
             from rclpy.executors import MultiThreadedExecutor
             from rclpy.parameter import Parameter
             from sensor_msgs.msg import BatteryState
+            from std_msgs.msg import String
             from tf2_ros import Buffer, TransformListener
         except ImportError as exc:
             self.error = f"ROS_UNAVAILABLE: {exc}"
@@ -94,6 +97,7 @@ class RobotRuntimeGateway:
         self._node.create_subscription(Odometry, "/odom", self._on_odom, 20)
         self._node.create_subscription(Path, "/plan", self._on_plan, 10)
         self._node.create_subscription(BatteryState, "/battery_state", self._on_battery, 10)
+        self._node.create_subscription(String, "/libot/patrol_observation", self._on_patrol_observation, 10)
         self._tf_buffer = Buffer(node=self._node)
         self._tf_listener = TransformListener(self._tf_buffer, self._node)
         self._tf_timer = self._node.create_timer(0.1, self._update_pose_from_tf)
@@ -115,6 +119,40 @@ class RobotRuntimeGateway:
             self._executor.shutdown(timeout_sec=2.0)
         if self._node is not None:
             self._node.destroy_node()
+
+    def wait_for_patrol_observation(self, timeout_sec: float) -> Optional[Any]:
+        deadline = time.monotonic() + max(0.0, timeout_sec)
+        with self._patrol_observation_condition:
+            while self._patrol_observation is None and self._running:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._patrol_observation_condition.wait(min(remaining, 0.25))
+            observation = self._patrol_observation
+            self._patrol_observation = None
+            return observation
+
+    def cancel_active_navigation(self) -> None:
+        with self._lock:
+            goal_handle = self._goal_handle
+        if goal_handle is not None:
+            try:
+                goal_handle.cancel_goal_async()
+            except Exception as exc:
+                self.error = f"Unable to cancel active navigation: {exc}"
+        self._publish_stop()
+
+    def navigation_ready(self, timeout_sec: float = 2.0) -> bool:
+        return self._action_client is not None and self._action_client.wait_for_server(timeout_sec=timeout_sec)
+
+    def _on_patrol_observation(self, message: Any) -> None:
+        try:
+            observation = json.loads(message.data)
+        except (TypeError, json.JSONDecodeError):
+            observation = {"type": "WARNING", "description": str(getattr(message, "data", ""))}
+        with self._patrol_observation_condition:
+            self._patrol_observation = observation
+            self._patrol_observation_condition.notify_all()
 
     def handle_request(self, payload: Any) -> Optional[Dict[str, Any]]:
         if not isinstance(payload, dict):

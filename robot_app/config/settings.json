@@ -22,7 +22,7 @@
     },
     "scanner": {
       "enabled": true,
-      "device": "camera",
+      "device": "imx500-tcp://127.0.0.1:9011",
       "timeout_sec": 5
     },
     "motion_safety": {
@@ -32,10 +32,12 @@
     },
     "ui": {
       "enabled": true,
-      "screen": "lcd"
+      "screen": "lcd",
+      "driver": "tkinter"
     },
     "speaker": {
       "enabled": true,
+      "driver": "espeak",
       "volume": 70
     }
   },

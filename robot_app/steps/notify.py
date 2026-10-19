@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from typing import Any, Dict, Optional
 
 from core.context import RobotContext
@@ -19,7 +20,16 @@ class NotifyStep(BaseStep):
     def execute(self, context: RobotContext) -> Any:
         message = self.resolve(context, self.message)
         if str(self.channel).upper() == "SPEAKER_TTS":
-            self.speaker.say(str(message))
+            try:
+                self.speaker.say(str(message))
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                return {
+                    "status": "error",
+                    "type": "NOTIFY",
+                    "channel": self.channel,
+                    "message": str(message),
+                    "error": str(exc),
+                }
         context.set("last_notification", message)
         return {
             "status": "notified",

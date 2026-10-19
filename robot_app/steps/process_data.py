@@ -27,39 +27,106 @@ class ProcessDataStep(BaseStep):
             if self.operation == "SEARCH_BOOK":
                 self._require_base_url(base_url)
                 query = parse.urlencode({"query": payload.get("query", ""), "matchMode": payload.get("match_mode", "FUZZY")})
-                data = self._json_request(f"{base_url}/api/book-guidance/search?{query}")
+                search_route = "/api/workflow-data/simulation/books/search" if payload.get("runtime_id") == "sim" else "/api/book-guidance/search"
+                data = self._json_request(f"{base_url}{search_route}?{query}")
             elif self.operation == "GET_BOOK_DETAIL":
                 self._require_base_url(base_url)
                 book_id = parse.quote(str(payload.get("book_id", "")), safe="")
-                data = self._json_request(f"{base_url}/api/book-guidance/books/{book_id}")
-                selected_item_id = context.get("book_item_id")
+                detail_route = "/api/workflow-data/simulation/books" if payload.get("runtime_id") == "sim" else "/api/book-guidance/books"
+                data = self._json_request(f"{base_url}{detail_route}/{book_id}")
+                copies = data.get("bookItems", []) if isinstance(data, dict) else []
+                selected_item_id = context.get("book_item_id") or payload.get("book_item_id")
                 if selected_item_id:
-                    copies = data.get("bookItems", []) if isinstance(data, dict) else []
                     selected_item = next(
                         (item for item in copies if str(item.get("id", "")).lower() == str(selected_item_id).lower()),
                         None,
                     )
-                    if selected_item is None or str(selected_item.get("status", "")).lower() != "available":
-                        raise ValueError("The selected book copy is missing or is no longer available.")
-                    location = selected_item.get("location")
-                    endpoint = location.get("endpoint") if isinstance(location, dict) else None
-                    if not isinstance(endpoint, dict):
-                        raise ValueError("The selected book copy has no navigation endpoint.")
-                    try:
-                        pose = [float(endpoint[key]) for key in ("x", "y", "theta")]
-                    except (KeyError, TypeError, ValueError) as exc:
-                        raise ValueError("The selected book copy has an invalid navigation endpoint.") from exc
-                    if not all(math.isfinite(value) for value in pose):
-                        raise ValueError("The selected book copy has an invalid navigation endpoint.")
-                    data = dict(data)
-                    data["location"] = location
-                    data["selectedBookItem"] = selected_item
+                else:
+                    selected_item = next((item for item in copies
+                        if str(item.get("status", "")).lower() == "available"
+                        and isinstance(item.get("location"), dict)
+                        and isinstance(item["location"].get("endpoint"), dict)), None)
+                if selected_item is None or str(selected_item.get("status", "")).lower() != "available":
+                    raise ValueError("No available copy of this book has a navigation endpoint.")
+                location = selected_item.get("location")
+                endpoint = location.get("endpoint") if isinstance(location, dict) else None
+                if not isinstance(endpoint, dict):
+                    raise ValueError("The selected book copy has no navigation endpoint.")
+                try:
+                    pose = [float(endpoint[key]) for key in ("x", "y", "theta")]
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ValueError("The selected book copy has an invalid navigation endpoint.") from exc
+                if not all(math.isfinite(value) for value in pose):
+                    raise ValueError("The selected book copy has an invalid navigation endpoint.")
+                data = dict(data)
+                data["location"] = location
+                data["selectedBookItem"] = selected_item
             elif self.operation == "SAVE_RATING":
                 self._require_base_url(base_url)
                 data = self._json_request(
                     f"{base_url}/api/book-guidance/feedback",
                     method="POST",
                     body={"taskId": payload.get("task_id"), "rating": int(payload.get("rating"))},
+                )
+            elif self.operation == "SEARCH_FACILITY":
+                self._require_base_url(base_url)
+                query = parse.urlencode({"query": payload.get("query", ""), "matchMode": payload.get("match_mode", "FUZZY")})
+                search_route = "/api/workflow-data/simulation/facilities/search" if payload.get("runtime_id") == "sim" else "/api/facility-guidance/search"
+                data = self._json_request(f"{base_url}{search_route}?{query}")
+            elif self.operation == "GET_FACILITY_DETAIL":
+                self._require_base_url(base_url)
+                facility_id = parse.quote(str(payload.get("facility_id", "")), safe="")
+                detail_route = "/api/workflow-data/simulation/facilities" if payload.get("runtime_id") == "sim" else "/api/facility-guidance/facilities"
+                data = self._json_request(f"{base_url}{detail_route}/{facility_id}")
+            elif self.operation == "SAVE_FACILITY_RATING":
+                self._require_base_url(base_url)
+                data = self._json_request(
+                    f"{base_url}/api/facility-guidance/feedback",
+                    method="POST",
+                    body={"taskId": payload.get("task_id"), "rating": int(payload.get("rating"))},
+                )
+            elif self.operation == "RECORD_INVENTORY":
+                self._require_base_url(base_url)
+                data = self._json_request(
+                    f"{base_url}/api/workflow-data/inventory/scan",
+                    method="POST",
+                    body={
+                        "missionId": payload.get("mission_id"),
+                        "runtimeId": payload.get("runtime_id"),
+                        "barcode": payload.get("barcode"),
+                        "shelfCode": payload.get("shelf_code"),
+                    },
+                )
+            elif self.operation == "FINALIZE_INVENTORY":
+                self._require_base_url(base_url)
+                data = self._json_request(
+                    f"{base_url}/api/workflow-data/inventory/reports",
+                    method="POST",
+                    body={
+                        "missionId": payload.get("mission_id"),
+                        "runtimeId": payload.get("runtime_id"),
+                        "shelfCode": payload.get("shelf_code"),
+                        "scopeType": payload.get("scope_type", "SHELF"),
+                        "reportType": payload.get("report_type", "INVENTORY"),
+                    },
+                )
+            elif self.operation == "RECORD_PATROL_OBSERVATION":
+                self._require_base_url(base_url)
+                data = self._json_request(
+                    f"{base_url}/api/workflow-data/patrol/observations",
+                    method="POST",
+                    body={
+                        "missionId": payload.get("mission_id"),
+                        "runtimeId": payload.get("runtime_id"),
+                        "observation": payload.get("observation"),
+                    },
+                )
+            elif self.operation == "FINALIZE_PATROL":
+                self._require_base_url(base_url)
+                data = self._json_request(
+                    f"{base_url}/api/workflow-data/patrol/reports",
+                    method="POST",
+                    body={"missionId": payload.get("mission_id"), "runtimeId": payload.get("runtime_id")},
                 )
             elif self.operation in {"IDENTITY", ""}:
                 data = payload

@@ -28,8 +28,19 @@ class ScanStep(BaseStep):
 
     def execute(self, context: RobotContext) -> Any:
         started_at = time.monotonic()
-        context_value = context.get(self.context_key)
+        default_queue = "patrol_observation_queue" if self.sensor == "patrol_observation" else "scan_queue"
+        queue_key = str(self.config.get("queue_key", default_queue))
+        runtime_id = str(context.get("runtime_id", "") or "").lower()
+        context_value = context.pop_next(queue_key) if runtime_id == "sim" else None
+        if runtime_id != "sim" and self.sensor != "patrol_observation":
+            # Legacy one-step callers that do not name a runtime may inject an
+            # explicit test/manual value; dispatched missions always set runtime_id.
+            context_value = context.get(self.context_key) if not runtime_id else None
+        if context_value is None and self.sensor == "patrol_observation":
+            context_value = context.get(self.context_key)
         scan_result = self._from_context(context_value)
+        if scan_result is None and (runtime_id == "sim" or self.sensor == "patrol_observation"):
+            scan_result = {"status": "timeout", "value": None, "source": "simulated" if runtime_id == "sim" else self.sensor}
         if scan_result is None:
             scan_result = self.scanner.scan(self.timeout_sec)
 
@@ -59,6 +70,8 @@ class ScanStep(BaseStep):
             return None
         if isinstance(context_value, dict):
             value = context_value.get("value", context_value.get("result"))
+            if value is None and self.sensor == "patrol_observation":
+                value = context_value
             return {
                 "status": context_value.get("status", "scanned"),
                 "value": value,

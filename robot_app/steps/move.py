@@ -108,6 +108,10 @@ class MoveStep(BaseStep):
                 return normalized
 
         if self.endpoint_id is not None:
+            runtime_destination = self._normalize_target(context.get("destination"))
+            if runtime_destination is not None and "x" in runtime_destination and "y" in runtime_destination:
+                runtime_destination["endpoint_id"] = self.resolve(context, self.endpoint_id)
+                return runtime_destination
             return {
                 "endpoint_id": self.resolve(context, self.endpoint_id),
             }
@@ -136,10 +140,7 @@ class MoveStep(BaseStep):
 
     def _resolve_goal(self, context: RobotContext) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         if self.path_id is not None:
-            return {
-                "path_id": self.path_id,
-                "target": None,
-            }, None
+            return None, "MOVE path_id requires a route resolver; use a resolved target pose instead."
 
         target = self._resolve_target(context)
         if target is None:

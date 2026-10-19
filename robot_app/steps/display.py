@@ -15,7 +15,7 @@ class DisplayStep(BaseStep):
         self.message = self.config.get("message", "Robot ready")
         self.ui_screen = self.config.get("ui_screen", "MESSAGE")
         self.data = self.config.get("data", {})
-        self.ui = UIController(self.config.get("ui", {}))
+        self.ui = UIController(self.config.get("ui", {}), self.config.get("_event_callback"))
 
     def execute(self, context: RobotContext) -> Any:
         data = self.resolve(context, self.data)

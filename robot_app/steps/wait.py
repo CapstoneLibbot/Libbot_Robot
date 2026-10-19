@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 
 from core.context import RobotContext
 from hardware.motion_safety import MotionSafetyController
+from hardware.ui_controller import UIController
 from steps.base_step import BaseStep
 
 
@@ -24,6 +25,9 @@ class WaitStep(BaseStep):
         self.timeout_sec = self._read_float("timeout_sec", default_timeout)
         self.poll_interval_sec = self._read_float("poll_interval_sec", 0.1)
         self.expected_value = self.config.get("expected_value")
+        self.ui_screen = self.config.get("ui_screen", "WAIT_FOR_TOUCH")
+        self.prompt = self.config.get("prompt", "Choose an option to continue")
+        self.ui = UIController(self.config.get("ui", {}), self.config.get("_event_callback"))
         self.stop_motion = self._read_bool(self.config.get("stop_motion", self.config.get("stop_motors", True)))
         safety_settings = self.config.get("motion_safety", {})
         self.motion_safety = MotionSafetyController(safety_settings)
@@ -34,13 +38,19 @@ class WaitStep(BaseStep):
 
         event_data = None
         if self.wait_for == "USER_TOUCH" and self.event_type:
+            self.ui.show_screen(self.ui_screen, {
+                "prompt": self.prompt,
+                "options": self.allowed_values or [],
+                "event_type": self.event_type,
+            }, event_type=str(self.event_type).upper())
             status, event_data = self._wait_for_event(context, started_at)
         elif self.context_key:
             status = self._wait_for_context(context, started_at)
         else:
             delay = self.timeout_sec if self.wait_for == "TIMEOUT" and "timeout_sec" in self.config else self.seconds
-            time.sleep(max(delay, 0.0))
-            status = "timeout" if self.wait_for == "TIMEOUT" else "waited"
+            status = self._wait_duration(context, delay)
+            if status != "cancelled":
+                status = "timeout" if self.wait_for == "TIMEOUT" else "waited"
 
         stop_after = self.motion_safety.stop("wait_end") if self.stop_motion else None
         payload = {
@@ -63,6 +73,8 @@ class WaitStep(BaseStep):
     def _wait_for_event(self, context: RobotContext, started_at: float) -> tuple[str, Any]:
         deadline = started_at + max(self.timeout_sec, 0.0)
         while time.monotonic() <= deadline:
+            if context.get("workflow_cancelled", False):
+                return "cancelled", None
             value = context.pop_event(str(self.event_type))
             if value is not None:
                 selected = self._event_value(value)
@@ -79,7 +91,11 @@ class WaitStep(BaseStep):
             return value
         if self.result_variable in value:
             return value[self.result_variable]
-        for key in ("value", "action", "selectedBookId", "selected_book_id", "bookId", "book_id", "rating"):
+        for key in (
+            "value", "action", "selectedBookId", "selected_book_id", "bookId", "book_id",
+            "facilityId", "facility_id", "selectedFacilityId", "selected_facility_id", "rating",
+            "observation",
+        ):
             if key in value:
                 return value[key]
         return value
@@ -87,11 +103,21 @@ class WaitStep(BaseStep):
     def _wait_for_context(self, context: RobotContext, started_at: float) -> str:
         deadline = started_at + max(self.timeout_sec, 0.0)
         while time.monotonic() <= deadline:
+            if context.get("workflow_cancelled", False):
+                return "cancelled"
             value = context.get(str(self.context_key))
             if self._matches(value):
                 return "waited"
             time.sleep(max(self.poll_interval_sec, 0.01))
         return "timeout"
+
+    def _wait_duration(self, context: RobotContext, delay: float) -> str:
+        deadline = time.monotonic() + max(delay, 0.0)
+        while time.monotonic() < deadline:
+            if context.get("workflow_cancelled", False):
+                return "cancelled"
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+        return "waited"
 
     def _matches(self, value: Any) -> bool:
         if self.expected_value is None:
