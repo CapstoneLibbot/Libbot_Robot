@@ -71,6 +71,7 @@ class STM32Bridge(Node):
         self.rx_buffer = bytearray()
         self.last_encoder_timeout_logged = False
         self.last_serial_error_logged = 0.0
+        self.last_velocity_ack_logged = 0.0
 
         self.serial_timer = self.create_timer(0.005, self.serial_callback)
         self.odom_timer = self.create_timer(0.02, self.publish_odom)
@@ -142,6 +143,13 @@ class STM32Bridge(Node):
                     self.process_battery(line)
                 elif line.startswith('LiBot STM32 READY'):
                     self.get_logger().info(line)
+                elif line == 'OK,VEL':
+                    now = time.monotonic()
+                    if now - self.last_velocity_ack_logged >= 1.0:
+                        self.get_logger().info('STM32 acknowledged VEL commands')
+                        self.last_velocity_ack_logged = now
+                elif line.startswith('ERR,'):
+                    self.get_logger().error(f'STM32 rejected command: {line}')
                 elif line:
                     self.get_logger().debug(f'STM32: {line}')
         except (serial.SerialException, OSError) as exc:
