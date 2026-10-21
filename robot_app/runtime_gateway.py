@@ -18,6 +18,7 @@ class RobotRuntimeGateway:
     """ROS-facing runtime adapter used by both Gazebo and the physical robot."""
 
     BATTERY_TIMEOUT_SEC = 3.0
+    STM32_ACK_TIMEOUT_SEC = 0.15
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None):
         config = settings or {}
@@ -51,6 +52,10 @@ class RobotRuntimeGateway:
         self._tf_listener: Any = None
         self._tf_timer: Any = None
         self._lock = threading.RLock()
+        self._manual_command_lock = threading.Lock()
+        self._stm32_ack_condition = threading.Condition()
+        self._stm32_velocity_ack_sequence = 0
+        self._stm32_last_status = ""
         self._running = False
         self._last_telemetry_error_log = 0.0
         self._last_map_error_log = 0.0
@@ -93,6 +98,9 @@ class RobotRuntimeGateway:
             PoseWithCovarianceStamped, "/initialpose", 10
         )
         self._stop_pub = self._node.create_publisher(Twist, "/cmd_vel", 10)
+        self._node.create_subscription(
+            String, "/stm32_bridge/status", self._on_stm32_bridge_status, 10
+        )
         self._node.create_subscription(OccupancyGrid, "/map", self._on_map, 1)
         self._node.create_subscription(
             PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl_pose, 10
@@ -172,15 +180,25 @@ class RobotRuntimeGateway:
         if command == "manual_stop":
             if self._navigation_process is not None and self._navigation_process.poll() is None:
                 return self._failure("Stop Nav2 before manual control.")
-            self._publish_stop()
-            with self._lock:
-                self._manual_active = False
-                resume_navigation = bool(payload.get("resume_navigation", False)) and self._resume_navigation_after_manual_stop
-                map_path = self._navigation_map_path
-                if resume_navigation:
-                    self._resume_navigation_after_manual_stop = False
+            with self._manual_command_lock:
+                acked, ack_error = self._publish_stop_and_wait_for_stm32()
+                with self._lock:
+                    self._manual_active = False
+                    resume_navigation = bool(payload.get("resume_navigation", False)) and self._resume_navigation_after_manual_stop
+                    map_path = self._navigation_map_path
+                    if resume_navigation and acked:
+                        self._resume_navigation_after_manual_stop = False
+                    elif resume_navigation:
+                        self._resume_navigation_after_manual_stop = True
+                if not acked:
+                    return self._failure(ack_error)
             if not resume_navigation:
-                return {"status": "accepted", "navigation_active": False, "navigation_restarted": False}
+                return {
+                    "status": "accepted",
+                    "stm32_acknowledged": True,
+                    "navigation_active": False,
+                    "navigation_restarted": False,
+                }
             if not map_path:
                 with self._lock:
                     self._resume_navigation_after_manual_stop = True
@@ -190,7 +208,12 @@ class RobotRuntimeGateway:
                 with self._lock:
                     self._resume_navigation_after_manual_stop = True
                 return result
-            return {"status": "accepted", "navigation_active": True, "navigation_restarted": True}
+            return {
+                "status": "accepted",
+                "stm32_acknowledged": True,
+                "navigation_active": True,
+                "navigation_restarted": True,
+            }
         if command == "start_mapping":
             return self._start_mapping()
         if command == "stop_mapping":
@@ -232,11 +255,61 @@ class RobotRuntimeGateway:
         message.linear.x = max(-0.7, min(0.7, values[0]))
         message.linear.y = max(-0.7, min(0.7, values[1]))
         message.angular.z = max(-0.5, min(0.5, values[2]))
+        with self._manual_command_lock:
+            with self._lock:
+                self._manual_active = True
+                self._last_manual_command = time.monotonic()
+            acked, ack_error = self._publish_velocity_and_wait_for_stm32(message)
+            if not acked:
+                with self._lock:
+                    self._manual_active = False
+                self._publish_stop()
+                return self._failure(ack_error)
+        return {
+            "status": "accepted",
+            "stm32_acknowledged": True,
+            "requested_velocity": {
+                "linear_x": message.linear.x,
+                "linear_y": message.linear.y,
+                "angular_z": message.angular.z,
+            },
+        }
+
+    def _on_stm32_bridge_status(self, message: Any) -> None:
+        status = str(getattr(message, "data", "")).strip()
+        with self._stm32_ack_condition:
+            self._stm32_last_status = status
+            if status == "ACK,VEL":
+                self._stm32_velocity_ack_sequence += 1
+            self._stm32_ack_condition.notify_all()
+
+    def _publish_velocity_and_wait_for_stm32(self, message: Any) -> tuple[bool, str]:
+        with self._stm32_ack_condition:
+            sequence = self._stm32_velocity_ack_sequence
         self._stop_pub.publish(message)
-        with self._lock:
-            self._manual_active = True
-            self._last_manual_command = time.monotonic()
-        return {"status": "accepted"}
+        return self._wait_for_stm32_velocity_ack(sequence)
+
+    def _publish_stop_and_wait_for_stm32(self) -> tuple[bool, str]:
+        with self._stm32_ack_condition:
+            sequence = self._stm32_velocity_ack_sequence
+        self._publish_stop()
+        return self._wait_for_stm32_velocity_ack(sequence)
+
+    def _wait_for_stm32_velocity_ack(self, previous_sequence: int) -> tuple[bool, str]:
+        with self._stm32_ack_condition:
+            acknowledged = self._stm32_ack_condition.wait_for(
+                lambda: self._stm32_velocity_ack_sequence > previous_sequence,
+                timeout=self.STM32_ACK_TIMEOUT_SEC,
+            )
+            if acknowledged:
+                return True, ""
+            last_status = self._stm32_last_status or "no STM32 status received"
+        error = (
+            "STM32 did not acknowledge the VEL command within "
+            f"{self.STM32_ACK_TIMEOUT_SEC:.2f}s ({last_status}). Check the flashed firmware and UART RX/TX wiring."
+        )
+        print(error, flush=True)
+        return False, error
 
     def _manual_watchdog(self) -> None:
         with self._lock:

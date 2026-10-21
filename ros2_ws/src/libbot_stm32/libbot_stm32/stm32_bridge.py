@@ -8,6 +8,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist, TransformStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import BatteryState
+from std_msgs.msg import String
 from tf2_ros import TransformBroadcaster
 
 
@@ -33,9 +34,13 @@ class STM32Bridge(Node):
 
     ENCODER_TIMEOUT_SEC = 0.30
     ENCODER_PACKET_PERIOD_SEC = 0.02
-    MAX_WHEEL_SPEED_MPS = 1.5
+    MAX_WHEEL_SPEED_MPS = 0.30
     ENCODER_JUMP_MARGIN = 1.5
     CMD_TIMEOUT_SEC = 0.50  # Safety stop command; STM32 needs its own watchdog
+    STM32_MAX_VX_MPS = 1.0
+    STM32_MAX_VY_MPS = 1.0
+    STM32_MAX_WZ_RAD_S = 3.0
+    STM32_MAX_WHEEL_SPEED_MPS = 0.30
     MAX_RX_BYTES = 8192
     MAX_LINE_BYTES = 256
 
@@ -50,6 +55,7 @@ class STM32Bridge(Node):
         self.get_logger().info(f'Connected to STM32: {self.port} @ {self.baudrate}')
 
         self.cmd_vel_sub = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
+        self.status_pub = self.create_publisher(String, '/stm32_bridge/status', 10)
         self.odom_pub = self.create_publisher(Odometry, '/odom', 20)
         self.battery_pub = self.create_publisher(BatteryState, '/battery_state', 10)
         self.tf_broadcaster = TransformBroadcaster(self)
@@ -84,6 +90,23 @@ class STM32Bridge(Node):
         )
 
     def send_velocity(self, vx, vy, wz):
+        requested = (vx, vy, wz)
+        vx = max(-self.STM32_MAX_VX_MPS, min(self.STM32_MAX_VX_MPS, vx))
+        vy = max(-self.STM32_MAX_VY_MPS, min(self.STM32_MAX_VY_MPS, vy))
+        wz = max(-self.STM32_MAX_WZ_RAD_S, min(self.STM32_MAX_WZ_RAD_S, wz))
+
+        wheel_speeds = (
+            vx + vy + self.L_PLUS_W * wz,
+            vx - vy - self.L_PLUS_W * wz,
+            vx - vy + self.L_PLUS_W * wz,
+            vx + vy - self.L_PLUS_W * wz,
+        )
+        max_wheel_speed = max(abs(speed) for speed in wheel_speeds)
+        if max_wheel_speed > self.STM32_MAX_WHEEL_SPEED_MPS:
+            scale = self.STM32_MAX_WHEEL_SPEED_MPS / max_wheel_speed
+            vx *= scale
+            vy *= scale
+            wz *= scale
 
         cmd = (
             f'VEL,{int(vx * 1000.0)},'
@@ -95,13 +118,26 @@ class STM32Bridge(Node):
             data = cmd.encode('ascii')
             written = self.serial.write(data)
 
-            self.get_logger().info(
-                f'TX UART: {cmd.strip()} | '
-                f'written={written}/{len(data)}'
+            if written != len(data):
+                error = f'UART short write: {written}/{len(data)} bytes'
+                self.get_logger().error(error)
+                self.publish_status(f'UART_TX_ERROR,{error}')
+                return
+
+            limited = (vx, vy, wz)
+            suffix = '' if limited == requested else (
+                f' | limited m/s,rad/s={vx:.3f},{vy:.3f},{wz:.3f}'
             )
+            self.get_logger().info(f'TX UART: {cmd.strip()} | written={written}/{len(data)}{suffix}')
 
         except (serial.SerialException, OSError) as exc:
             self.get_logger().error(f'UART error: {exc}')
+            self.publish_status(f'UART_TX_ERROR,{exc}')
+
+    def publish_status(self, status):
+        message = String()
+        message.data = str(status)
+        self.status_pub.publish(message)
 
     def cmd_vel_callback(self, msg):
         vx, vy, wz = float(msg.linear.x), float(msg.linear.y), float(msg.angular.z)
@@ -143,13 +179,16 @@ class STM32Bridge(Node):
                     self.process_battery(line)
                 elif line.startswith('LiBot STM32 READY'):
                     self.get_logger().info(line)
+                    self.publish_status('STM32_READY')
                 elif line == 'OK,VEL':
+                    self.publish_status('ACK,VEL')
                     now = time.monotonic()
                     if now - self.last_velocity_ack_logged >= 1.0:
                         self.get_logger().info('STM32 acknowledged VEL commands')
                         self.last_velocity_ack_logged = now
                 elif line.startswith('ERR,'):
                     self.get_logger().error(f'STM32 rejected command: {line}')
+                    self.publish_status(f'MCU_ERROR,{line}')
                 elif line:
                     self.get_logger().debug(f'STM32: {line}')
         except (serial.SerialException, OSError) as exc:
