@@ -199,12 +199,11 @@ class RobotRuntimeGateway:
             if not resume_navigation:
                 result = {
                     "status": "accepted",
-                    "stm32_acknowledged": acked,
                     "navigation_active": False,
                     "navigation_restarted": False,
                 }
-                if not acked:
-                    result["warning"] = ack_error
+                if acked:
+                    result["stm32_acknowledged"] = True
                 return result
             if not map_path:
                 with self._lock:
@@ -217,12 +216,11 @@ class RobotRuntimeGateway:
                 return result
             result = {
                 "status": "accepted",
-                "stm32_acknowledged": acked,
                 "navigation_active": True,
                 "navigation_restarted": True,
             }
-            if not acked:
-                result["warning"] = ack_error
+            if acked:
+                result["stm32_acknowledged"] = True
             return result
         if command == "start_mapping":
             return self._start_mapping()
@@ -295,7 +293,6 @@ class RobotRuntimeGateway:
                 return self._failure(ack_error)
         result = {
             "status": "accepted",
-            "stm32_acknowledged": acked,
             "requested_velocity": {
                 "linear_x": message.linear.x,
                 "linear_y": message.linear.y,
@@ -303,8 +300,8 @@ class RobotRuntimeGateway:
             },
             "max_wheel_speed_mm_s": max_wheel_speed_mm_s,
         }
-        if not acked:
-            result["warning"] = ack_error
+        if acked:
+            result["stm32_acknowledged"] = True
         return result
 
     def _on_stm32_bridge_status(self, message: Any) -> None:
