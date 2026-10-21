@@ -19,6 +19,7 @@ class RobotRuntimeGateway:
 
     BATTERY_TIMEOUT_SEC = 3.0
     STM32_ACK_TIMEOUT_SEC = 0.15
+    MANUAL_WHEEL_L_PLUS_W_M = 0.30
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None):
         config = settings or {}
@@ -245,9 +246,14 @@ class RobotRuntimeGateway:
                 float(payload.get("linear_y", 0.0)),
                 float(payload.get("angular_z", 0.0)),
             )
+            if payload.get("max_wheel_speed_mm_s") is None:
+                raise ValueError("Backend must provide max_wheel_speed_mm_s.")
+            max_wheel_speed_mm_s = float(payload["max_wheel_speed_mm_s"])
             if not all(math.isfinite(value) for value in values):
                 raise ValueError("Velocity must be finite.")
-        except (TypeError, ValueError) as exc:
+            if not math.isfinite(max_wheel_speed_mm_s) or max_wheel_speed_mm_s <= 0.0:
+                raise ValueError("max_wheel_speed_mm_s must be a positive finite number.")
+        except (TypeError, ValueError, OverflowError) as exc:
             return self._failure(str(exc))
         from geometry_msgs.msg import Twist
 
@@ -255,6 +261,19 @@ class RobotRuntimeGateway:
         message.linear.x = max(-0.7, min(0.7, values[0]))
         message.linear.y = max(-0.7, min(0.7, values[1]))
         message.angular.z = max(-0.5, min(0.5, values[2]))
+        wheel_speeds = (
+            message.linear.x + message.linear.y + self.MANUAL_WHEEL_L_PLUS_W_M * message.angular.z,
+            message.linear.x - message.linear.y - self.MANUAL_WHEEL_L_PLUS_W_M * message.angular.z,
+            message.linear.x - message.linear.y + self.MANUAL_WHEEL_L_PLUS_W_M * message.angular.z,
+            message.linear.x + message.linear.y - self.MANUAL_WHEEL_L_PLUS_W_M * message.angular.z,
+        )
+        max_wheel_speed_mps = max_wheel_speed_mm_s / 1000.0
+        peak_wheel_speed_mps = max(abs(speed) for speed in wheel_speeds)
+        if peak_wheel_speed_mps > max_wheel_speed_mps:
+            scale = max_wheel_speed_mps / peak_wheel_speed_mps
+            message.linear.x *= scale
+            message.linear.y *= scale
+            message.angular.z *= scale
         with self._manual_command_lock:
             with self._lock:
                 self._manual_active = True
@@ -273,6 +292,7 @@ class RobotRuntimeGateway:
                 "linear_y": message.linear.y,
                 "angular_z": message.angular.z,
             },
+            "max_wheel_speed_mm_s": max_wheel_speed_mm_s,
         }
 
     def _on_stm32_bridge_status(self, message: Any) -> None:

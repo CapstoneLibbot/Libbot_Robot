@@ -34,13 +34,12 @@ class STM32Bridge(Node):
 
     ENCODER_TIMEOUT_SEC = 0.30
     ENCODER_PACKET_PERIOD_SEC = 0.02
-    MAX_WHEEL_SPEED_MPS = 0.30
+    ODOM_MAX_WHEEL_SPEED_MPS = 0.30
     ENCODER_JUMP_MARGIN = 1.5
     CMD_TIMEOUT_SEC = 0.50  # Safety stop command; STM32 needs its own watchdog
     STM32_MAX_VX_MPS = 1.0
     STM32_MAX_VY_MPS = 1.0
     STM32_MAX_WZ_RAD_S = 3.0
-    STM32_MAX_WHEEL_SPEED_MPS = 0.30
     MAX_RX_BYTES = 8192
     MAX_LINE_BYTES = 256
 
@@ -94,19 +93,6 @@ class STM32Bridge(Node):
         vx = max(-self.STM32_MAX_VX_MPS, min(self.STM32_MAX_VX_MPS, vx))
         vy = max(-self.STM32_MAX_VY_MPS, min(self.STM32_MAX_VY_MPS, vy))
         wz = max(-self.STM32_MAX_WZ_RAD_S, min(self.STM32_MAX_WZ_RAD_S, wz))
-
-        wheel_speeds = (
-            vx + vy + self.L_PLUS_W * wz,
-            vx - vy - self.L_PLUS_W * wz,
-            vx - vy + self.L_PLUS_W * wz,
-            vx + vy - self.L_PLUS_W * wz,
-        )
-        max_wheel_speed = max(abs(speed) for speed in wheel_speeds)
-        if max_wheel_speed > self.STM32_MAX_WHEEL_SPEED_MPS:
-            scale = self.STM32_MAX_WHEEL_SPEED_MPS / max_wheel_speed
-            vx *= scale
-            vy *= scale
-            wz *= scale
 
         cmd = (
             f'VEL,{int(vx * 1000.0)},'
@@ -280,7 +266,7 @@ class STM32Bridge(Node):
         effective_dt = max(dt, self.ENCODER_PACKET_PERIOD_SEC)
         max_delta = max(
             100.0,
-            self.MAX_WHEEL_SPEED_MPS * effective_dt
+            self.ODOM_MAX_WHEEL_SPEED_MPS * effective_dt
             / scale * self.ENCODER_JUMP_MARGIN,
         )
         if any(abs(delta) > max_delta for delta in deltas):
