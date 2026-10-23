@@ -53,10 +53,20 @@ class WorkflowEngine:
 
     def create_step(self, step_def: Dict[str, Any]) -> BaseStep:
         enriched_step = self._with_default_step_config(step_def)
+        if (str(enriched_step.get("type", "")).upper() == "WAIT"
+                and self.runtime_gateway is not None
+                and getattr(self.runtime_gateway, "use_sim_time", False)):
+            enriched_step["_simulation_speed_provider"] = self._simulation_speed
         enriched_step["_event_callback"] = self._submit_touch_event
         step_type = enriched_step.get("type", "WAIT")
         step_class = self.STEP_TYPES.get(step_type.upper(), WaitStep)
         return step_class(enriched_step)
+
+    def _simulation_speed(self) -> float:
+        try:
+            return min(4.0, max(1.0, float(self.runtime_gateway.simulation_speed)))
+        except (AttributeError, TypeError, ValueError):
+            return 1.0
 
     def run(self) -> None:
         self.run_steps([step.config for step in self.steps])
@@ -115,6 +125,7 @@ class WorkflowEngine:
     def _step_succeeded(
         self,
         step_result: Dict[str, Any],
+        step_def: Optional[Dict[str, Any]] = None,
     ) -> bool:
         step_type = step_result.get("step_type")
         result = step_result.get("result", {})
@@ -129,7 +140,15 @@ class WorkflowEngine:
             return result.get("status") == "scanned"
 
         if step_type == "WAIT":
-            return result.get("status") in {"waited", "event"}
+            if result.get("status") in {"waited", "event"}:
+                return True
+            transitions = step_def.get("transitions", {}) if isinstance(step_def, dict) else {}
+            if not isinstance(transitions, dict):
+                transitions = {}
+            transitions = {**step_def, **transitions} if isinstance(step_def, dict) else transitions
+            return result.get("status") == "timeout" and bool(
+                transitions.get("on_timeout", transitions.get("on_timeout_step"))
+            )
 
         return result.get("status") not in {
             "error",
@@ -172,13 +191,15 @@ class WorkflowEngine:
             self._apply_output_mapping(step_def, step_result)
             results.append(step_result)
             visited += 1
-            succeeded = self._step_succeeded(step_result)
+            succeeded = self._step_succeeded(step_result, step_def)
             if execution_id is not None:
                 with self.lock:
                     execution = self.executions.get(execution_id)
                     if execution is not None:
                         execution["last_result"] = step_result.get("result")
-                        if not succeeded:
+                        if succeeded:
+                            execution["last_error"] = None
+                        else:
                             detail = step_result.get("result", {})
                             execution["last_error"] = detail.get("message") or detail.get("error") or f"Step {step_result.get('step')} failed."
                 self._publish_execution(
@@ -344,6 +365,7 @@ class WorkflowEngine:
             "stepType": execution.get("current_step_type"),
             "expectedEventType": execution.get("expected_event_type"),
             "allowedValues": execution.get("allowed_values") or [],
+            "expectedBookId": execution.get("assigned_book_id"),
             "result": result,
             "error": error,
         }).encode("utf-8")
@@ -431,6 +453,9 @@ class WorkflowEngine:
     def _preflight(self, require_hardware: bool) -> Dict[str, Any]:
         runtime_id = str(os.getenv("LIBOT_RUNTIME_ID") or self.settings.get("runtime", {}).get("id", "real")).lower()
         checks: Dict[str, Any] = {"runtime_id": runtime_id}
+        with self.lock:
+            if any(item.get("status") in {"accepted", "running"} for item in self.executions.values()):
+                return self._error("The robot is already running another workflow.", "PREFLIGHT_FAILED", checks=checks)
         if self.runtime_gateway is None or getattr(self.runtime_gateway, "_node", None) is None:
             return self._error("ROS/Nav2 runtime is unavailable.", "PREFLIGHT_FAILED", checks=checks)
         if getattr(self.runtime_gateway, "error", None):
@@ -549,6 +574,7 @@ class WorkflowEngine:
                     "task_id": request.get("task_id"),
                     "mission_id": request.get("mission_id", request.get("task_id")),
                     "runtime_id": request.get("runtime_id", self.context.get("runtime_id")),
+                    "assigned_book_id": initial_context.get("book_id"),
                     "current_step": None,
                     "current_step_name": None,
                     "current_step_type": None,
@@ -625,6 +651,7 @@ class WorkflowEngine:
                 execution_snapshot["currentStepType"] = execution_snapshot.pop("current_step_type", None)
                 execution_snapshot["expectedEventType"] = execution_snapshot.pop("expected_event_type", None)
                 execution_snapshot["allowedValues"] = execution_snapshot.pop("allowed_values", [])
+                execution_snapshot["expectedBookId"] = execution_snapshot.pop("assigned_book_id", None)
                 execution_snapshot.pop("result_variable", None)
             return {"status": "ok", "execution_id": execution_id, "execution": execution_snapshot}
 
@@ -667,9 +694,14 @@ class WorkflowEngine:
                 )
 
             selected = self._event_value(data, execution.get("result_variable"))
+            runtime_id = str(execution.get("runtime_id") or self.context.get("runtime_id") or "").lower()
             if event_type == "BOOK_SELECTED":
                 expected_book_id = self.context.get("book_id")
-                if expected_book_id and str(selected) != str(expected_book_id):
+                if runtime_id == "sim":
+                    if expected_book_id and str(selected) != str(expected_book_id):
+                        self.context.set("book_item_id", None)
+                    self.context.set("book_id", selected)
+                elif expected_book_id and str(selected) != str(expected_book_id):
                     return self._error(
                         "Selected book does not match the book assigned to this execution.",
                         "INVALID_EVENT_DATA",

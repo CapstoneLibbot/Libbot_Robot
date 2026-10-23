@@ -114,7 +114,7 @@ class STM32Bridge(Node):
             suffix = '' if limited == requested else (
                 f' | limited m/s,rad/s={vx:.3f},{vy:.3f},{wz:.3f}'
             )
-            self.get_logger().info(f'TX UART: {cmd.strip()} | written={written}/{len(data)}{suffix}')
+            self.get_logger().debug(f'TX UART: {cmd.strip()} | written={written}/{len(data)}{suffix}')
 
         except (serial.SerialException, OSError) as exc:
             self.get_logger().error(f'UART error: {exc}')

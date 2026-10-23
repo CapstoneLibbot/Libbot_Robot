@@ -25,6 +25,7 @@ class WaitStep(BaseStep):
         self.timeout_sec = self._read_float("timeout_sec", default_timeout)
         self.poll_interval_sec = self._read_float("poll_interval_sec", 0.1)
         self.expected_value = self.config.get("expected_value")
+        self.simulation_speed_provider = self.config.get("_simulation_speed_provider")
         self.ui_screen = self.config.get("ui_screen", "WAIT_FOR_TOUCH")
         self.prompt = self.config.get("prompt", "Choose an option to continue")
         self.ui = UIController(self.config.get("ui", {}), self.config.get("_event_callback"))
@@ -43,9 +44,9 @@ class WaitStep(BaseStep):
                 "options": self.allowed_values or [],
                 "event_type": self.event_type,
             }, event_type=str(self.event_type).upper())
-            status, event_data = self._wait_for_event(context, started_at)
+            status, event_data = self._wait_for_event(context)
         elif self.context_key:
-            status = self._wait_for_context(context, started_at)
+            status = self._wait_for_context(context)
         else:
             delay = self.timeout_sec if self.wait_for == "TIMEOUT" and "timeout_sec" in self.config else self.seconds
             status = self._wait_duration(context, delay)
@@ -70,8 +71,8 @@ class WaitStep(BaseStep):
         context.set("last_wait_result", payload)
         return payload
 
-    def _wait_for_event(self, context: RobotContext, started_at: float) -> tuple[str, Any]:
-        deadline = started_at + max(self.timeout_sec, 0.0)
+    def _wait_for_event(self, context: RobotContext) -> tuple[str, Any]:
+        deadline = time.monotonic() + max(self.timeout_sec, 0.0)
         while time.monotonic() <= deadline:
             if context.get("workflow_cancelled", False):
                 return "cancelled", None
@@ -100,24 +101,41 @@ class WaitStep(BaseStep):
                 return value[key]
         return value
 
-    def _wait_for_context(self, context: RobotContext, started_at: float) -> str:
-        deadline = started_at + max(self.timeout_sec, 0.0)
-        while time.monotonic() <= deadline:
+    def _wait_for_context(self, context: RobotContext) -> str:
+        remaining = max(self.timeout_sec, 0.0)
+        last_tick = time.monotonic()
+        while remaining > 0:
             if context.get("workflow_cancelled", False):
                 return "cancelled"
             value = context.get(str(self.context_key))
             if self._matches(value):
                 return "waited"
-            time.sleep(max(self.poll_interval_sec, 0.01))
+            now = time.monotonic()
+            speed = self._simulation_speed()
+            remaining -= (now - last_tick) * speed
+            last_tick = now
+            if remaining > 0:
+                time.sleep(min(max(self.poll_interval_sec, 0.01) / speed, remaining / speed))
         return "timeout"
 
     def _wait_duration(self, context: RobotContext, delay: float) -> str:
-        deadline = time.monotonic() + max(delay, 0.0)
-        while time.monotonic() < deadline:
+        remaining = max(delay, 0.0)
+        while remaining > 0:
             if context.get("workflow_cancelled", False):
                 return "cancelled"
-            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+            speed = self._simulation_speed()
+            started = time.monotonic()
+            time.sleep(min(0.1, remaining / speed))
+            remaining -= (time.monotonic() - started) * speed
         return "waited"
+
+    def _simulation_speed(self) -> float:
+        if not callable(self.simulation_speed_provider):
+            return 1.0
+        try:
+            return min(4.0, max(1.0, float(self.simulation_speed_provider())))
+        except (TypeError, ValueError):
+            return 1.0
 
     def _matches(self, value: Any) -> bool:
         if self.expected_value is None:

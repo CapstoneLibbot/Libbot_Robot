@@ -1,4 +1,5 @@
 import os
+import json
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -16,9 +17,10 @@ def generate_launch_description():
     urdf_file = os.path.join(
         description_share, "urdf", "libot.urdf.xacro"
     )
-    world_file = os.path.join(
-        description_share, "worlds", "library.generated.sdf"
-    )
+    layout_file = os.path.join(description_share, "config", "library_layout.json")
+    with open(layout_file, encoding="utf-8") as stream:
+        robot_spawn = json.load(stream)["robotSpawn"]
+    world_file = os.path.join(description_share, "worlds", "library.sdf")
     bridge_file = os.path.join(
         bringup_share, "config", "ros_gz_bridge.yaml"
     )
@@ -52,9 +54,10 @@ def generate_launch_description():
             arguments=[
                 "-name", "libot",
                 "-topic", "robot_description",
-                "-x", "-0.638",
-                "-y", "-0.324",
-                "-z", "0.15",
+                "-x", str(robot_spawn["x"]),
+                "-y", str(robot_spawn["y"]),
+                "-z", str(robot_spawn["z"]),
+                "-Y", str(robot_spawn["yaw"]),
             ],
             output="screen",
         ),

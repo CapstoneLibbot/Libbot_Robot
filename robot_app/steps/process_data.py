@@ -22,17 +22,23 @@ class ProcessDataStep(BaseStep):
 
     def execute(self, context: RobotContext) -> Any:
         payload = self.resolve(context, self.payload)
+        runtime_id = str(
+            payload.get("runtime_id")
+            or context.get("runtime_id")
+            or os.getenv("LIBOT_RUNTIME_ID")
+            or "real"
+        ).strip().lower()
         base_url = self._resolve_backend_base_url(context)
         try:
             if self.operation == "SEARCH_BOOK":
                 self._require_base_url(base_url)
                 query = parse.urlencode({"query": payload.get("query", ""), "matchMode": payload.get("match_mode", "FUZZY")})
-                search_route = "/api/workflow-data/simulation/books/search" if payload.get("runtime_id") == "sim" else "/api/book-guidance/search"
+                search_route = "/api/workflow-data/simulation/books/search" if runtime_id == "sim" else "/api/book-guidance/search"
                 data = self._json_request(f"{base_url}{search_route}?{query}")
             elif self.operation == "GET_BOOK_DETAIL":
                 self._require_base_url(base_url)
                 book_id = parse.quote(str(payload.get("book_id", "")), safe="")
-                detail_route = "/api/workflow-data/simulation/books" if payload.get("runtime_id") == "sim" else "/api/book-guidance/books"
+                detail_route = "/api/workflow-data/simulation/books" if runtime_id == "sim" else "/api/book-guidance/books"
                 data = self._json_request(f"{base_url}{detail_route}/{book_id}")
                 copies = data.get("bookItems", []) if isinstance(data, dict) else []
                 selected_item_id = context.get("book_item_id") or payload.get("book_item_id")
@@ -62,37 +68,43 @@ class ProcessDataStep(BaseStep):
                 data["location"] = location
                 data["selectedBookItem"] = selected_item
             elif self.operation == "SAVE_RATING":
-                self._require_base_url(base_url)
-                data = self._json_request(
-                    f"{base_url}/api/book-guidance/feedback",
-                    method="POST",
-                    body={"taskId": payload.get("task_id"), "rating": int(payload.get("rating"))},
-                )
+                if runtime_id == "sim":
+                    data = {"status": "simulated", "rating": int(payload.get("rating"))}
+                else:
+                    self._require_base_url(base_url)
+                    data = self._json_request(
+                        f"{base_url}/api/book-guidance/feedback",
+                        method="POST",
+                        body={"taskId": payload.get("task_id"), "rating": int(payload.get("rating"))},
+                    )
             elif self.operation == "SEARCH_FACILITY":
                 self._require_base_url(base_url)
                 query = parse.urlencode({"query": payload.get("query", ""), "matchMode": payload.get("match_mode", "FUZZY")})
-                search_route = "/api/workflow-data/simulation/facilities/search" if payload.get("runtime_id") == "sim" else "/api/facility-guidance/search"
+                search_route = "/api/workflow-data/simulation/facilities/search" if runtime_id == "sim" else "/api/facility-guidance/search"
                 data = self._json_request(f"{base_url}{search_route}?{query}")
             elif self.operation == "GET_FACILITY_DETAIL":
                 self._require_base_url(base_url)
                 facility_id = parse.quote(str(payload.get("facility_id", "")), safe="")
-                detail_route = "/api/workflow-data/simulation/facilities" if payload.get("runtime_id") == "sim" else "/api/facility-guidance/facilities"
+                detail_route = "/api/workflow-data/simulation/facilities" if runtime_id == "sim" else "/api/facility-guidance/facilities"
                 data = self._json_request(f"{base_url}{detail_route}/{facility_id}")
             elif self.operation == "SAVE_FACILITY_RATING":
-                self._require_base_url(base_url)
-                data = self._json_request(
-                    f"{base_url}/api/facility-guidance/feedback",
-                    method="POST",
-                    body={"taskId": payload.get("task_id"), "rating": int(payload.get("rating"))},
-                )
+                if runtime_id == "sim":
+                    data = {"status": "simulated", "rating": int(payload.get("rating"))}
+                else:
+                    self._require_base_url(base_url)
+                    data = self._json_request(
+                        f"{base_url}/api/facility-guidance/feedback",
+                        method="POST",
+                        body={"taskId": payload.get("task_id"), "rating": int(payload.get("rating"))},
+                    )
             elif self.operation == "RECORD_INVENTORY":
                 self._require_base_url(base_url)
                 data = self._json_request(
                     f"{base_url}/api/workflow-data/inventory/scan",
                     method="POST",
                     body={
-                        "missionId": payload.get("mission_id"),
-                        "runtimeId": payload.get("runtime_id"),
+                        "missionId": payload.get("mission_id") or context.get("mission_id"),
+                        "runtimeId": payload.get("runtime_id") or runtime_id,
                         "barcode": payload.get("barcode"),
                         "shelfCode": payload.get("shelf_code"),
                     },
@@ -103,8 +115,8 @@ class ProcessDataStep(BaseStep):
                     f"{base_url}/api/workflow-data/inventory/reports",
                     method="POST",
                     body={
-                        "missionId": payload.get("mission_id"),
-                        "runtimeId": payload.get("runtime_id"),
+                        "missionId": payload.get("mission_id") or context.get("mission_id"),
+                        "runtimeId": payload.get("runtime_id") or runtime_id,
                         "shelfCode": payload.get("shelf_code"),
                         "scopeType": payload.get("scope_type", "SHELF"),
                         "reportType": payload.get("report_type", "INVENTORY"),
@@ -116,8 +128,8 @@ class ProcessDataStep(BaseStep):
                     f"{base_url}/api/workflow-data/patrol/observations",
                     method="POST",
                     body={
-                        "missionId": payload.get("mission_id"),
-                        "runtimeId": payload.get("runtime_id"),
+                        "missionId": payload.get("mission_id") or context.get("mission_id"),
+                        "runtimeId": payload.get("runtime_id") or runtime_id,
                         "observation": payload.get("observation"),
                     },
                 )
@@ -126,7 +138,10 @@ class ProcessDataStep(BaseStep):
                 data = self._json_request(
                     f"{base_url}/api/workflow-data/patrol/reports",
                     method="POST",
-                    body={"missionId": payload.get("mission_id"), "runtimeId": payload.get("runtime_id")},
+                    body={
+                        "missionId": payload.get("mission_id") or context.get("mission_id"),
+                        "runtimeId": payload.get("runtime_id") or runtime_id,
+                    },
                 )
             elif self.operation in {"IDENTITY", ""}:
                 data = payload

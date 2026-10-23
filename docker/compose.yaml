@@ -42,6 +42,7 @@ services:
       ROS_DOMAIN_ID: "0"
       LIBOT_RUNTIME_ID: sim
       LIBOT_TCP_PORT: "9001"
+      LIBOT_SIM_WORLD: library
       LIBOT_BACKEND_URL: "${LIBOT_BACKEND_URL:-http://host.docker.internal:5205}"
     command: >-
       bash -lc "source /opt/ros/jazzy/setup.bash && source /ros2_ws/install/setup.bash &&

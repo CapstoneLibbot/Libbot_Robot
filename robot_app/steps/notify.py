@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import os
 from typing import Any, Dict, Optional
 
 from core.context import RobotContext
@@ -19,7 +20,9 @@ class NotifyStep(BaseStep):
 
     def execute(self, context: RobotContext) -> Any:
         message = self.resolve(context, self.message)
-        if str(self.channel).upper() == "SPEAKER_TTS":
+        runtime_id = str(context.get("runtime_id") or os.getenv("LIBOT_RUNTIME_ID") or "real").lower()
+        delivery = "simulated" if runtime_id == "sim" else "delivered"
+        if str(self.channel).upper() == "SPEAKER_TTS" and runtime_id != "sim":
             try:
                 self.speaker.say(str(message))
             except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
@@ -36,4 +39,5 @@ class NotifyStep(BaseStep):
             "type": "NOTIFY",
             "channel": self.channel,
             "message": message,
+            "delivery": delivery,
         }

@@ -38,8 +38,6 @@ def main() -> None:
     try:
         server.start_in_background()
         runtime_gateway.start()
-        if workflow.steps:
-            workflow.run()
         while True:
             time.sleep(1.0)
     except KeyboardInterrupt:

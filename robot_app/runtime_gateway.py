@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -19,6 +20,7 @@ class RobotRuntimeGateway:
 
     BATTERY_TIMEOUT_SEC = 3.0
     STM32_ACK_TIMEOUT_SEC = 0.15
+    NAV2_STARTUP_TIMEOUT_SEC = 60.0
     MANUAL_WHEEL_L_PLUS_W_M = 0.30
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None):
@@ -28,6 +30,8 @@ class RobotRuntimeGateway:
             os.getenv("LIBOT_RUNTIME_ID", runtime.get("id", "real"))
         ).strip().lower()
         self.use_sim_time = self.runtime_id == "sim"
+        self.simulation_world = str(os.getenv("LIBOT_SIM_WORLD", "library")).strip()
+        self.simulation_speed = 1
         self.backend_url = os.getenv(
             "LIBOT_BACKEND_URL",
             runtime.get("backend_url", "http://127.0.0.1:5205"),
@@ -67,6 +71,7 @@ class RobotRuntimeGateway:
         self._mapping_process: Optional[subprocess.Popen[Any]] = None
         self._navigation_process: Optional[subprocess.Popen[Any]] = None
         self._navigation_map_path: Optional[str] = None
+        self._pose_map_path: Optional[str] = None
         self._resume_navigation_after_manual_stop = False
         self._patrol_observation_condition = threading.Condition(self._lock)
         self._patrol_observation: Optional[Any] = None
@@ -170,6 +175,12 @@ class RobotRuntimeGateway:
         if not isinstance(payload, dict):
             return None
         command = str(payload.get("command", "")).lower()
+        if command == "get_simulation_speed":
+            if not self.use_sim_time:
+                return self._failure("Simulation speed is available only for the SIM runtime.")
+            return {"status": "ok", "multiplier": self.simulation_speed}
+        if command == "set_simulation_speed":
+            return self._set_simulation_speed(payload)
         if command == "set_initial_pose":
             return self._set_initial_pose(payload.get("pose") or {})
         if command == "start_navigation":
@@ -231,9 +242,50 @@ class RobotRuntimeGateway:
             self._navigation_process = None
             self._publish_stop()
             with self._lock:
+                self.localization_state = "UNLOCALIZED"
+                self._pose_map_path = None
+                self.error = (
+                    "INITIAL_POSE_REQUIRED: Set the robot's current pose on the map "
+                    "before sending a navigation goal."
+                )
                 self._resume_navigation_after_manual_stop = bool(self._navigation_map_path)
             return {"status": "accepted", "navigation_active": False}
         return None
+
+    def _set_simulation_speed(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.use_sim_time:
+            return self._failure("Simulation speed is available only for the SIM runtime.")
+        try:
+            multiplier = int(payload.get("multiplier"))
+        except (TypeError, ValueError, OverflowError):
+            return self._failure("Simulation speed must be one of 1, 2, 3, or 4.")
+        if multiplier not in {1, 2, 3, 4}:
+            return self._failure("Simulation speed must be one of 1, 2, 3, or 4.")
+        if not self.simulation_world or not re.fullmatch(r"[A-Za-z0-9_]+", self.simulation_world):
+            return self._failure("The configured Gazebo world name is invalid.")
+
+        request_text = f"real_time_factor: {float(multiplier):.1f}"
+        try:
+            result = subprocess.run(
+                [
+                    "gz", "service", "-s", f"/world/{self.simulation_world}/set_physics",
+                    "--reqtype", "gz.msgs.Physics", "--reptype", "gz.msgs.Boolean",
+                    "--timeout", "2000", "--req", request_text,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return self._failure(f"Unable to change Gazebo simulation speed: {exc}")
+
+        response_text = f"{result.stdout}\n{result.stderr}".strip()
+        if result.returncode != 0 or not re.search(r"\bdata\s*:\s*true\b", response_text, re.IGNORECASE):
+            detail = response_text or f"gz service exited with code {result.returncode}."
+            return self._failure(f"Gazebo rejected simulation speed {multiplier}x: {detail}")
+        self.simulation_speed = multiplier
+        return {"status": "accepted", "multiplier": multiplier}
 
     def _manual_velocity(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if self._node is None or self._stop_pub is None:
@@ -349,6 +401,8 @@ class RobotRuntimeGateway:
         try:
             with self._lock:
                 self._map = None
+                self.localization_state = "UNLOCALIZED"
+                self._pose_map_path = None
             self._mapping_process = subprocess.Popen(
                 [
                     "ros2", "launch", "libot_bringup", "mapping.launch.py",
@@ -378,7 +432,12 @@ class RobotRuntimeGateway:
             return self._failure("Nav2 is already running.")
         try:
             with self._lock:
-                initial_pose = dict(self.pose)
+                initial_pose = (
+                    dict(self.pose)
+                    if self.localization_state == "LOCALIZED"
+                    and self._pose_map_path == str(path)
+                    else None
+                )
             self._navigation_process = subprocess.Popen(
                 [
                     "ros2", "launch", "libot_bringup", "navigation.launch.py",
@@ -398,17 +457,34 @@ class RobotRuntimeGateway:
                 return self._failure(
                     f"Nav2 launch exited immediately with code {return_code}; check the robot container logs."
                 )
-            if self._action_client is None or not self._action_client.wait_for_server(timeout_sec=8.0):
+            if self._action_client is None or not self._action_client.wait_for_server(
+                timeout_sec=self.NAV2_STARTUP_TIMEOUT_SEC
+            ):
                 self._terminate_process(self._navigation_process)
                 self._navigation_process = None
                 return self._failure(
-                    "Nav2 action server /navigate_to_pose did not become available within 8 seconds; "
+                    "Nav2 action server /navigate_to_pose did not become available within "
+                    f"{self.NAV2_STARTUP_TIMEOUT_SEC:.0f} seconds; "
                     "the launch was stopped. Check the robot container logs."
                 )
             with self._lock:
                 self._navigation_map_path = str(path)
                 self._resume_navigation_after_manual_stop = False
-            threading.Thread(target=self._seed_nav2_pose, args=(initial_pose,), daemon=True).start()
+                if initial_pose is None:
+                    self.localization_state = "UNLOCALIZED"
+                    self._pose_map_path = None
+                    self.error = (
+                        "INITIAL_POSE_REQUIRED: Set the robot's current pose on the map "
+                        "before sending a navigation goal."
+                    )
+                else:
+                    self.error = None
+            if initial_pose is not None:
+                threading.Thread(
+                    target=self._seed_nav2_pose,
+                    args=(initial_pose,),
+                    daemon=True,
+                ).start()
             return {"status": "accepted"}
         except OSError as exc:
             return self._failure(f"Could not start Nav2: {exc}")
@@ -469,6 +545,9 @@ class RobotRuntimeGateway:
             )
             pgm_temp.replace(pgm_path)
             yaml_temp.replace(yaml_path)
+            with self._lock:
+                if self.localization_state == "LOCALIZED":
+                    self._pose_map_path = str(yaml_path)
             return {
                 "status": "accepted",
                 "yaml_path": str(yaml_path),
@@ -534,6 +613,7 @@ class RobotRuntimeGateway:
         with self._lock:
             self.localization_state = "LOCALIZING"
             self.error = None
+            self._pose_map_path = self._navigation_map_path
         return {"status": "accepted", "localization_state": "LOCALIZING"}
 
     def _start_navigation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -659,6 +739,8 @@ class RobotRuntimeGateway:
         with self._lock:
             self.pose = self._message_pose(pose)
             self.localization_state = "LOCALIZED"
+            if self._navigation_process is not None and self._navigation_process.poll() is None:
+                self._pose_map_path = self._navigation_map_path
 
     def _update_pose_from_tf(self) -> None:
         if self._tf_buffer is None:
@@ -684,6 +766,10 @@ class RobotRuntimeGateway:
                 "yaw": yaw,
             }
             self.localization_state = "LOCALIZED"
+            if self._navigation_process is not None and self._navigation_process.poll() is None:
+                self._pose_map_path = self._navigation_map_path
+            elif self._mapping_process is not None and self._mapping_process.poll() is None:
+                self._pose_map_path = None
 
     def _on_odom(self, message: Any) -> None:
         twist = message.twist.twist
