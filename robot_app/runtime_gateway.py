@@ -20,8 +20,10 @@ class RobotRuntimeGateway:
 
     BATTERY_TIMEOUT_SEC = 3.0
     STM32_ACK_TIMEOUT_SEC = 0.15
+    STM32_ERROR_STATUS_PREFIXES = ("UART_TX_ERROR,", "MCU_ERROR,")
     MANUAL_WHEEL_L_PLUS_W_M = 0.30
     NAV2_STARTUP_TIMEOUT_SEC = 60.0
+
     def __init__(self, settings: Optional[Dict[str, Any]] = None):
         config = settings or {}
         runtime = config.get("runtime", {})
