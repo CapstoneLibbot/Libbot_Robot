@@ -20,9 +20,8 @@ class RobotRuntimeGateway:
 
     BATTERY_TIMEOUT_SEC = 3.0
     STM32_ACK_TIMEOUT_SEC = 0.15
-    NAV2_STARTUP_TIMEOUT_SEC = 60.0
     MANUAL_WHEEL_L_PLUS_W_M = 0.30
-
+    NAV2_STARTUP_TIMEOUT_SEC = 60.0
     def __init__(self, settings: Optional[Dict[str, Any]] = None):
         config = settings or {}
         runtime = config.get("runtime", {})
@@ -60,6 +59,7 @@ class RobotRuntimeGateway:
         self._manual_command_lock = threading.Lock()
         self._stm32_ack_condition = threading.Condition()
         self._stm32_velocity_ack_sequence = 0
+        self._stm32_status_sequence = 0
         self._stm32_last_status = ""
         self._running = False
         self._last_telemetry_error_log = 0.0
@@ -194,23 +194,26 @@ class RobotRuntimeGateway:
                 return self._failure("Stop Nav2 before manual control.")
             with self._manual_command_lock:
                 acked, ack_error = self._publish_stop_and_wait_for_stm32()
+                hard_error = self._is_stm32_error_status(ack_error)
                 with self._lock:
                     self._manual_active = False
                     resume_navigation = bool(payload.get("resume_navigation", False)) and self._resume_navigation_after_manual_stop
                     map_path = self._navigation_map_path
-                    if resume_navigation and acked:
+                    if resume_navigation and not hard_error:
                         self._resume_navigation_after_manual_stop = False
                     elif resume_navigation:
                         self._resume_navigation_after_manual_stop = True
-                if not acked:
+                if hard_error:
                     return self._failure(ack_error)
             if not resume_navigation:
-                return {
+                result = {
                     "status": "accepted",
-                    "stm32_acknowledged": True,
                     "navigation_active": False,
                     "navigation_restarted": False,
                 }
+                if acked:
+                    result["stm32_acknowledged"] = True
+                return result
             if not map_path:
                 with self._lock:
                     self._resume_navigation_after_manual_stop = True
@@ -220,12 +223,14 @@ class RobotRuntimeGateway:
                 with self._lock:
                     self._resume_navigation_after_manual_stop = True
                 return result
-            return {
+            result = {
                 "status": "accepted",
-                "stm32_acknowledged": True,
                 "navigation_active": True,
                 "navigation_restarted": True,
             }
+            if acked:
+                result["stm32_acknowledged"] = True
+            return result
         if command == "start_mapping":
             return self._start_mapping()
         if command == "stop_mapping":
@@ -331,14 +336,13 @@ class RobotRuntimeGateway:
                 self._manual_active = True
                 self._last_manual_command = time.monotonic()
             acked, ack_error = self._publish_velocity_and_wait_for_stm32(message)
-            if not acked:
+            if not acked and self._is_stm32_error_status(ack_error):
                 with self._lock:
                     self._manual_active = False
                 self._publish_stop()
                 return self._failure(ack_error)
-        return {
+        result = {
             "status": "accepted",
-            "stm32_acknowledged": True,
             "requested_velocity": {
                 "linear_x": message.linear.x,
                 "linear_y": message.linear.y,
@@ -346,42 +350,64 @@ class RobotRuntimeGateway:
             },
             "max_wheel_speed_mm_s": max_wheel_speed_mm_s,
         }
+        if acked:
+            result["stm32_acknowledged"] = True
+        return result
 
     def _on_stm32_bridge_status(self, message: Any) -> None:
         status = str(getattr(message, "data", "")).strip()
         with self._stm32_ack_condition:
             self._stm32_last_status = status
+            self._stm32_status_sequence += 1
             if status == "ACK,VEL":
                 self._stm32_velocity_ack_sequence += 1
             self._stm32_ack_condition.notify_all()
 
     def _publish_velocity_and_wait_for_stm32(self, message: Any) -> tuple[bool, str]:
         with self._stm32_ack_condition:
-            sequence = self._stm32_velocity_ack_sequence
+            ack_sequence = self._stm32_velocity_ack_sequence
+            status_sequence = self._stm32_status_sequence
         self._stop_pub.publish(message)
-        return self._wait_for_stm32_velocity_ack(sequence)
+        return self._wait_for_stm32_velocity_ack(ack_sequence, status_sequence)
 
     def _publish_stop_and_wait_for_stm32(self) -> tuple[bool, str]:
         with self._stm32_ack_condition:
-            sequence = self._stm32_velocity_ack_sequence
+            ack_sequence = self._stm32_velocity_ack_sequence
+            status_sequence = self._stm32_status_sequence
         self._publish_stop()
-        return self._wait_for_stm32_velocity_ack(sequence)
+        return self._wait_for_stm32_velocity_ack(ack_sequence, status_sequence)
 
-    def _wait_for_stm32_velocity_ack(self, previous_sequence: int) -> tuple[bool, str]:
+    def _wait_for_stm32_velocity_ack(
+        self,
+        previous_ack_sequence: int,
+        previous_status_sequence: int,
+    ) -> tuple[bool, str]:
         with self._stm32_ack_condition:
             acknowledged = self._stm32_ack_condition.wait_for(
-                lambda: self._stm32_velocity_ack_sequence > previous_sequence,
+                lambda: (
+                    self._stm32_velocity_ack_sequence > previous_ack_sequence
+                    or (
+                        self._stm32_status_sequence > previous_status_sequence
+                        and self._is_stm32_error_status(self._stm32_last_status)
+                    )
+                ),
                 timeout=self.STM32_ACK_TIMEOUT_SEC,
             )
-            if acknowledged:
+            if self._stm32_velocity_ack_sequence > previous_ack_sequence:
                 return True, ""
+            if acknowledged and self._is_stm32_error_status(self._stm32_last_status):
+                return False, self._stm32_last_status
             last_status = self._stm32_last_status or "no STM32 status received"
-        error = (
+        warning = (
             "STM32 did not acknowledge the VEL command within "
-            f"{self.STM32_ACK_TIMEOUT_SEC:.2f}s ({last_status}). Check the flashed firmware and UART RX/TX wiring."
+            f"{self.STM32_ACK_TIMEOUT_SEC:.2f}s ({last_status}); command was still sent."
         )
-        print(error, flush=True)
-        return False, error
+        print(f"Warning: {warning}", flush=True)
+        return False, warning
+
+    @classmethod
+    def _is_stm32_error_status(cls, status: str) -> bool:
+        return str(status).startswith(cls.STM32_ERROR_STATUS_PREFIXES)
 
     def _manual_watchdog(self) -> None:
         with self._lock:
