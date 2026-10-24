@@ -16,17 +16,14 @@ class STM32Bridge(Node):
     # Physical dimensions (meters), center-to-center measurements
     WHEEL_DIAMETER = 0.06
     WHEEL_CIRCUMFERENCE = math.pi * WHEEL_DIAMETER
-    ENCODER_CPR = 1980.0  # Check actual counts per wheel revolution
+    ENCODER_CPR = 1980.0  
     WHEEL_BASE = 0.27     # front to rear wheel centers
     TRACK_WIDTH = 0.33    # left to right wheel centers
     L = WHEEL_BASE / 2.0
     W = TRACK_WIDTH / 2.0
     L_PLUS_W = L + W
 
-    # ENC packet wheel order, as defined by the STM32 firmware:
     # M1=front-left, M2=front-right, M3=rear-left, M4=rear-right.
-    # The signs below convert the raw encoder direction to positive wheel
-    # motion in the robot kinematic convention.
     M1_SIGN = 1
     M2_SIGN = -1
     M3_SIGN = 1

@@ -70,7 +70,17 @@ class FlowOneEngineTests(unittest.TestCase):
             "execution_id": "flow-1",
             "task_id": "task-1",
             "initial_context": {"query": "robotics"},
-            "steps": [{"id": "S190", "name": "S190", "type": "DISPLAY", "ui_screen": "HOME"}],
+            "steps": [
+                {
+                    "id": "S190",
+                    "name": "S190",
+                    "type": "DISPLAY",
+                    "ui_screen": "HOME",
+                    "transitions": {"on_success": "S200", "on_error": "S210"},
+                },
+                {"id": "S200", "name": "S200", "type": "END", "result_status": "SUCCEEDED"},
+                {"id": "S210", "name": "S210", "type": "END", "result_status": "FAILED"},
+            ],
         })
         self.assertEqual("accepted", response["status"])
 
@@ -84,6 +94,10 @@ class FlowOneEngineTests(unittest.TestCase):
 
         self.assertIsNotNone(execution)
         self.assertEqual("completed", execution["execution"]["status"])
+        self.assertEqual(
+            "SUCCEEDED",
+            execution["execution"]["result"]["results"][-1]["result"]["workflow_status"],
+        )
 
     def test_book_selected_event_is_routed_to_execution_and_assigned_book(self):
         response = self.engine.handle_request({
@@ -141,20 +155,22 @@ class FlowOneEngineTests(unittest.TestCase):
         })
         self.assertEqual("SUCCEEDED", response["result"]["workflow_status"])
 
-    def test_error_transition_can_show_home_but_execution_stays_failed(self):
+    def test_error_transition_reaches_explicit_failed_end(self):
         result = self.engine.run_steps([
             {
                 "id": "S10",
                 "name": "S10",
                 "type": "PROCESS_DATA",
                 "action": "UNKNOWN",
-                "transitions": {"on_error": "S190"},
+                "transitions": {"on_error": "S210"},
             },
-            {"id": "S190", "name": "S190", "type": "DISPLAY", "ui_screen": "HOME"},
+            {"id": "S200", "name": "S200", "type": "END", "result_status": "SUCCEEDED"},
+            {"id": "S210", "name": "S210", "type": "END", "result_status": "FAILED"},
         ])
 
         self.assertEqual("error", result["status"])
-        self.assertEqual(["S10", "S190"], [item["step"] for item in result["results"]])
+        self.assertEqual(["S10", "S210"], [item["step"] for item in result["results"]])
+        self.assertEqual("FAILED", result["results"][-1]["result"]["workflow_status"])
 
 
 if __name__ == "__main__":
