@@ -34,6 +34,15 @@ class RobotRuntimeGateway:
     AMCL_MAX_SAMPLE_YAW_SPREAD_RAD = 0.15
     NAVIGATION_PROGRESS_DISTANCE_M = 0.05
     NAV2_ACTIVATION_TIMEOUT_SEC = 30.0
+    NAVIGATION_NODES = (
+        "controller_server",
+        "smoother_server",
+        "planner_server",
+        "behavior_server",
+        "bt_navigator",
+        "waypoint_follower",
+        "velocity_smoother",
+    )
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None):
         config = settings or {}
@@ -237,7 +246,13 @@ class RobotRuntimeGateway:
         if self._action_client is None or not self._action_client.wait_for_server(timeout_sec=timeout_sec):
             return False
         with self._lock:
-            return self.navigation_mode_state == "READY"
+            ready = self.navigation_mode_state == "READY"
+        if not ready:
+            return False
+        return all(
+            self._lifecycle_state(name, min(0.25, timeout_sec)) == 3
+            for name in self.NAVIGATION_NODES
+        )
 
     def _on_patrol_observation(self, message: Any) -> None:
         try:
@@ -1017,13 +1032,39 @@ class RobotRuntimeGateway:
                 lifecycle_started = self._navigation_lifecycle_started
 
             command = "RESUME" if lifecycle_started else "STARTUP"
-            if not self._call_navigation_lifecycle(command, timeout_sec=10.0):
-                paused = self._call_navigation_lifecycle("PAUSE", timeout_sec=5.0)
-                if paused:
-                    with self._lock:
-                        self._navigation_lifecycle_started = True
-                        self._navigation_lifecycle_paused = True
-                self._fail_localization_attempt(attempt_id, "NAV2_ACTIVATION_FAILED")
+            if not lifecycle_started:
+                states = self._navigation_lifecycle_states(timeout_sec=0.5)
+                if any(state in {2, 3, 4} for state in states.values()):
+                    if not self._call_navigation_lifecycle("RESET", timeout_sec=15.0):
+                        self._fail_localization_attempt(
+                            attempt_id,
+                            "NAV2_RESET_FAILED: " + self._format_lifecycle_states(states),
+                        )
+                        return
+            if not self._call_navigation_lifecycle(
+                command, timeout_sec=self.NAV2_ACTIVATION_TIMEOUT_SEC
+            ):
+                states = self._navigation_lifecycle_states(timeout_sec=1.0)
+                detail = self._format_lifecycle_states(states)
+                self._call_navigation_lifecycle("RESET", timeout_sec=15.0)
+                with self._lock:
+                    self._navigation_lifecycle_started = False
+                    self._navigation_lifecycle_paused = False
+                self._fail_localization_attempt(
+                    attempt_id, f"NAV2_ACTIVATION_FAILED: {detail}"
+                )
+                return
+
+            if not self._wait_for_navigation_nodes_active(timeout_sec=10.0):
+                states = self._navigation_lifecycle_states(timeout_sec=1.0)
+                detail = self._format_lifecycle_states(states)
+                self._call_navigation_lifecycle("RESET", timeout_sec=15.0)
+                with self._lock:
+                    self._navigation_lifecycle_started = False
+                    self._navigation_lifecycle_paused = False
+                self._fail_localization_attempt(
+                    attempt_id, f"NAV2_NODES_NOT_ACTIVE: {detail}"
+                )
                 return
 
             with self._lock:
@@ -1090,6 +1131,51 @@ class RobotRuntimeGateway:
             return bool(response and response.success)
         except Exception:
             return False
+
+    def _lifecycle_state(self, node_name: str, timeout_sec: float = 1.0) -> Optional[int]:
+        if self._node is None or self._get_lifecycle_state_type is None:
+            return None
+        try:
+            client = self._lifecycle_state_clients.get(node_name)
+            if client is None:
+                client = self._node.create_client(
+                    self._get_lifecycle_state_type, f"/{node_name}/get_state"
+                )
+                self._lifecycle_state_clients[node_name] = client
+            if not client.wait_for_service(timeout_sec=timeout_sec):
+                return None
+            future = client.call_async(self._get_lifecycle_state_type.Request())
+            completed = threading.Event()
+            future.add_done_callback(lambda _: completed.set())
+            if not completed.wait(max(0.0, timeout_sec)):
+                return None
+            response = future.result()
+            return int(response.current_state.id) if response is not None else None
+        except Exception:
+            return None
+
+    def _navigation_lifecycle_states(self, timeout_sec: float = 1.0) -> Dict[str, Optional[int]]:
+        return {
+            name: self._lifecycle_state(name, timeout_sec)
+            for name in self.NAVIGATION_NODES
+        }
+
+    @staticmethod
+    def _format_lifecycle_states(states: Dict[str, Optional[int]]) -> str:
+        labels = {1: "unconfigured", 2: "inactive", 3: "active", 4: "finalized"}
+        return ", ".join(
+            f"{name}={labels.get(state, 'unavailable')}"
+            for name, state in states.items()
+        )
+
+    def _wait_for_navigation_nodes_active(self, timeout_sec: float) -> bool:
+        deadline = time.monotonic() + max(0.0, timeout_sec)
+        while self._running and time.monotonic() < deadline:
+            states = self._navigation_lifecycle_states(timeout_sec=0.25)
+            if all(state == 3 for state in states.values()):
+                return True
+            time.sleep(0.1)
+        return False
 
     def _fail_localization_attempt(self, attempt_id: int, error_code: str) -> None:
         with self._lock:

@@ -66,6 +66,8 @@ bt_navigator:
       plugin: nav2_bt_navigator::NavigateToPoseNavigator
     navigate_through_poses:
       plugin: nav2_bt_navigator::NavigateThroughPosesNavigator
+    default_nav_to_pose_bt_xml: /ros2_ws/src/libot_bringup/behavior_trees/navigate_to_pose.xml
+    default_nav_through_poses_bt_xml: /ros2_ws/src/libot_bringup/behavior_trees/navigate_through_poses.xml
     error_code_names:
     - compute_path_error_code
     - follow_path_error_code

@@ -33,6 +33,18 @@ def stable_samples(count: int = 5):
 
 
 class Nav2StabilityTests(unittest.TestCase):
+    def test_lifecycle_summary_identifies_partially_started_stack(self):
+        gateway = RobotRuntimeGateway()
+        states = dict.fromkeys(gateway.NAVIGATION_NODES, 1)
+        states["controller_server"] = 3
+        states["bt_navigator"] = 2
+
+        summary = gateway._format_lifecycle_states(states)
+
+        self.assertIn("controller_server=active", summary)
+        self.assertIn("bt_navigator=inactive", summary)
+        self.assertIn("velocity_smoother=unconfigured", summary)
+
     def test_amcl_stability_requires_five_fresh_and_bounded_samples(self):
         samples = stable_samples()
         self.assertFalse(RobotRuntimeGateway._amcl_window_is_stable(samples[:4]))
@@ -150,6 +162,7 @@ class Nav2StabilityTests(unittest.TestCase):
         )
         gateway._last_scan_ros_stamp_ns = ros_now_ns
         gateway._action_client = SimpleNamespace(wait_for_server=lambda timeout_sec: True)
+        gateway._wait_for_navigation_nodes_active = lambda timeout_sec: True
         with patch.dict(sys.modules, {
             "std_srvs": std_srvs,
             "std_srvs.srv": std_srvs_srv,
@@ -416,6 +429,14 @@ class Nav2ConfigurationTests(unittest.TestCase):
         config = (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
         self.assertIn("- navigate_to_pose", config)
         self.assertIn("- navigate_through_poses", config)
+        self.assertIn(
+            "default_nav_to_pose_bt_xml: /ros2_ws/src/libot_bringup/behavior_trees/navigate_to_pose.xml",
+            config,
+        )
+        self.assertIn(
+            "default_nav_through_poses_bt_xml: /ros2_ws/src/libot_bringup/behavior_trees/navigate_through_poses.xml",
+            config,
+        )
 
     def test_nav2_tuning_matches_no_replanning_motion_policy(self):
         config = (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
