@@ -127,15 +127,15 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      footprint: '[[0.25, 0.20], [0.25, -0.20], [-0.25, -0.20], [-0.25, 0.20]]'
-      footprint_padding: 0.03
+      footprint: '[[0.165, 0.165], [0.165, -0.165], [-0.165, -0.165], [-0.165, 0.165]]'
+      footprint_padding: 0.02
       plugins:
       - obstacle_layer
       - inflation_layer
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 3.0
-        inflation_radius: 0.5
+        inflation_radius: 0.35
       always_send_full_costmap: true
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -159,8 +159,8 @@ global_costmap:
       robot_base_frame: base_footprint
       resolution: 0.05
       track_unknown_space: true
-      footprint: '[[0.25, 0.20], [0.25, -0.20], [-0.25, -0.20], [-0.25, 0.20]]'
-      footprint_padding: 0.03
+      footprint: '[[0.165, 0.165], [0.165, -0.165], [-0.165, -0.165], [-0.165, 0.165]]'
+      footprint_padding: 0.02
       plugins:
       - static_layer
       - obstacle_layer
@@ -184,7 +184,7 @@ global_costmap:
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 3.0
-        inflation_radius: 0.5
+        inflation_radius: 0.35
       always_send_full_costmap: true
 map_saver:
   ros__parameters:
