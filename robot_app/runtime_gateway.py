@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib import request
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 
 class RobotRuntimeGateway:
@@ -47,6 +47,7 @@ class RobotRuntimeGateway:
             "LIBOT_BACKEND_URL",
             runtime.get("backend_url", "http://127.0.0.1:5205"),
         ).rstrip("/")
+        self.maps_dir = Path(os.getenv("LIBOT_MAPS_DIR", "/ros2_ws/maps")).resolve()
         self.telemetry_hz = max(1.0, min(float(runtime.get("telemetry_hz", 5.0)), 10.0))
         self.pose = {"x": 0.0, "y": 0.0, "yaw": 0.0}
         self.twist = {"linearX": 0.0, "linearY": 0.0, "angularZ": 0.0}
@@ -101,7 +102,17 @@ class RobotRuntimeGateway:
         self._mapping_process: Optional[subprocess.Popen[Any]] = None
         self._navigation_process: Optional[subprocess.Popen[Any]] = None
         self._navigation_map_path: Optional[str] = None
+        self._active_map_id: Optional[str] = None
         self._pose_map_path: Optional[str] = None
+        self.navigation_ready_state = False
+        self.navigation_mode_state = "STOPPED"
+        self._navigation_bootstrap_complete = False
+        self._navigation_activation_attempted = False
+        self._navigation_activation_lock = threading.Lock()
+        self._manage_navigation_client: Any = None
+        self._manage_lifecycle_type: Any = None
+        self._get_lifecycle_state_type: Any = None
+        self._lifecycle_state_clients: Dict[str, Any] = {}
         self._resume_navigation_after_manual_stop = False
         self._patrol_observation_condition = threading.Condition(self._lock)
         self._patrol_observation: Optional[Any] = None
@@ -111,6 +122,7 @@ class RobotRuntimeGateway:
             import rclpy
             from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
             from nav2_msgs.action import NavigateToPose
+            from nav2_msgs.srv import ManageLifecycleNodes
             from nav_msgs.msg import OccupancyGrid, Odometry, Path
             from rclpy.action import ActionClient
             from rclpy.executors import MultiThreadedExecutor
@@ -121,6 +133,7 @@ class RobotRuntimeGateway:
             from std_srvs.srv import Empty
             from nav2_msgs.srv import ManageLifecycleNodes
             from tf2_ros import Buffer, TransformListener
+            from lifecycle_msgs.srv import GetState
         except ImportError as exc:
             self.error = f"ROS_UNAVAILABLE: {exc}"
             return
@@ -161,12 +174,19 @@ class RobotRuntimeGateway:
         self._tf_timer = self._node.create_timer(0.1, self._update_pose_from_tf)
         self._manual_watchdog_timer = self._node.create_timer(0.05, self._manual_watchdog)
         self._action_client = ActionClient(self._node, NavigateToPose, "/navigate_to_pose")
+        self._manage_navigation_client = self._node.create_client(
+            ManageLifecycleNodes, "/lifecycle_manager_navigation/manage_nodes"
+        )
+        self._manage_lifecycle_type = ManageLifecycleNodes
+        self._get_lifecycle_state_type = GetState
         self._executor = MultiThreadedExecutor(num_threads=2)
         self._executor.add_node(self._node)
         self._running = True
         threading.Thread(target=self._executor.spin, daemon=True).start()
         threading.Thread(target=self._telemetry_loop, daemon=True).start()
         threading.Thread(target=self._map_retry_loop, daemon=True).start()
+        if self.runtime_id == "real":
+            threading.Thread(target=self._auto_navigation_loop, daemon=True).start()
 
     def stop(self) -> None:
         self._running = False
@@ -513,8 +533,13 @@ class RobotRuntimeGateway:
     ) -> Dict[str, Any]:
         if self._mapping_process is not None and self._mapping_process.poll() is None:
             return self._failure("Stop SLAM mapping before starting Nav2.")
-        path = Path(map_path)
-        if not path.is_absolute() or path.suffix.lower() != ".yaml" or not str(path).startswith("/ros2_ws/maps/") or not path.is_file():
+        path = Path(map_path).resolve()
+        if (
+            not path.is_absolute()
+            or path.suffix.lower() != ".yaml"
+            or self.maps_dir not in path.parents
+            or not path.is_file()
+        ):
             return self._failure("The selected map YAML is not available on the robot.")
         if self._navigation_process is not None and self._navigation_process.poll() is None:
             return self._failure("Nav2 is already running.")
@@ -544,6 +569,7 @@ class RobotRuntimeGateway:
                     "use_hardware:=false",
                     "start_workflow_app:=false",
                     "use_rviz:=false",
+                    f"autostart_navigation:={'true' if self.use_sim_time else 'false'}",
                     f"use_sim_time:={'true' if self.use_sim_time else 'false'}",
                 ],
                 stdin=subprocess.DEVNULL,
@@ -607,6 +633,10 @@ class RobotRuntimeGateway:
 
             with self._lock:
                 self._navigation_map_path = str(path)
+                self._active_map_id = str(map_id) if map_id else None
+                self.navigation_ready_state = self.use_sim_time
+                self.navigation_mode_state = "READY" if self.use_sim_time else "WAITING_INITIAL_POSE"
+                self._navigation_activation_attempted = False
                 self._resume_navigation_after_manual_stop = False
                 self.navigation_mode_state = "ACTIVATING" if self.use_sim_time else "WAITING_INITIAL_POSE"
                 self.localization_state = "UNLOCALIZED"
@@ -657,34 +687,16 @@ class RobotRuntimeGateway:
             grid = dict(self._map) if self._map is not None else None
         if grid is None:
             return self._failure("No live occupancy grid has been received.")
-        if not file_stem.startswith("/ros2_ws/maps/") or ".." in Path(file_stem).parts:
+        output = Path(file_stem).resolve()
+        if self.maps_dir not in output.parents:
             return self._failure("Map file path is invalid.")
         width = int(grid["width"])
         height = int(grid["height"])
         values = grid["data"]
         if width <= 0 or height <= 0 or len(values) != width * height:
             return self._failure("Occupancy grid dimensions do not match its data.")
-        output = Path(file_stem)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        pgm_path = output.with_suffix(".pgm")
-        yaml_path = output.with_suffix(".yaml")
         try:
-            pixels = bytearray()
-            for row in range(height - 1, -1, -1):
-                for value in values[row * width:(row + 1) * width]:
-                    occupancy = int(value)
-                    pixels.append(205 if occupancy < 0 else max(0, min(254, round(254 - occupancy * 2.54))))
-            pgm_temp = pgm_path.with_suffix(".pgm.tmp")
-            yaml_temp = yaml_path.with_suffix(".yaml.tmp")
-            pgm_temp.write_bytes(f"P5\n{width} {height}\n255\n".encode("ascii") + pixels)
-            yaml_temp.write_text(
-                f"image: {pgm_path.name}\nmode: trinary\nresolution: {grid['resolution']}\n"
-                f"origin: [{grid['origin_x']}, {grid['origin_y']}, {grid['origin_yaw']}]\n"
-                "negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\n",
-                encoding="utf-8",
-            )
-            pgm_temp.replace(pgm_path)
-            yaml_temp.replace(yaml_path)
+            yaml_path, pgm_path = self._write_grid_files(grid, output)
             with self._lock:
                 if self.localization_state == "LOCALIZED":
                     self._pose_map_path = str(yaml_path)
@@ -1424,6 +1436,14 @@ class RobotRuntimeGateway:
         with self._lock:
             mapping_active = self._mapping_process is not None and self._mapping_process.poll() is None
             navigation_active = self._navigation_process is not None and self._navigation_process.poll() is None
+            if self.use_sim_time and self._action_client is not None:
+                self.navigation_ready_state = self._action_client.server_is_ready()
+                self.navigation_mode_state = "READY" if self.navigation_ready_state else "FETCHING_MAP"
+            if not navigation_active and self.navigation_ready_state:
+                if not self.use_sim_time:
+                    self.navigation_ready_state = False
+                    self.navigation_mode_state = "ERROR"
+                    self.error = "NAV2_PROCESS_EXITED: The navigation launch process is no longer running."
             payload = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "pose": dict(self.pose),
