@@ -7,6 +7,7 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -53,6 +54,11 @@ def generate_launch_description():
             default_value="false",
         ),
         DeclareLaunchArgument(
+            "amcl_tf_broadcast",
+            default_value="true",
+            description="Let AMCL publish map to odom (disable when simulation uses ground truth TF)",
+        ),
+        DeclareLaunchArgument(
             "use_hardware",
             default_value="true",
             description="Start robot description, LiDAR and STM32 bridge",
@@ -62,6 +68,16 @@ def generate_launch_description():
             default_value="true",
             description="Start RViz with the standard Nav2 view",
         ),
+        DeclareLaunchArgument(
+            "start_workflow_app",
+            default_value="true",
+            description="Start the Python workflow TCP server for backend commands",
+        ),
+        DeclareLaunchArgument(
+            "robot_app_path",
+            default_value="/ros2_ws/robot_app/main.py",
+            description="Absolute path to robot_app/main.py",
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(robot_launch),
             condition=IfCondition(LaunchConfiguration("use_hardware")),
@@ -69,6 +85,8 @@ def generate_launch_description():
                 "lidar_port": LaunchConfiguration("lidar_port"),
                 "stm32_port": LaunchConfiguration("stm32_port"),
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
+                "start_workflow_app": LaunchConfiguration("start_workflow_app"),
+                "robot_app_path": LaunchConfiguration("robot_app_path"),
             }.items(),
         ),
         Node(
@@ -91,7 +109,12 @@ def generate_launch_description():
             output="screen",
             parameters=[
                 LaunchConfiguration("params_file"),
-                {"use_sim_time": LaunchConfiguration("use_sim_time")},
+                {
+                    "use_sim_time": LaunchConfiguration("use_sim_time"),
+                    "tf_broadcast": ParameterValue(
+                        LaunchConfiguration("amcl_tf_broadcast"), value_type=bool
+                    ),
+                },
             ],
         ),
         Node(

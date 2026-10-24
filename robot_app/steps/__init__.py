@@ -1,5 +1,6 @@
 from .base_step import BaseStep
 from .display import DisplayStep
+from .end import EndStep
 from .evaluate import EvaluateStep
 from .move import MoveStep
 from .notify import NotifyStep
@@ -14,6 +15,7 @@ __all__ = [
     "ProcessDataStep",
     "EvaluateStep",
     "DisplayStep",
+    "EndStep",
     "WaitStep",
     "NotifyStep",
 ]

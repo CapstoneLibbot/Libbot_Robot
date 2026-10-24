@@ -1,35 +1,50 @@
+x-ros2-common: &ros2-common
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+    network: host
+  network_mode: host
+  restart: unless-stopped
+  volumes:
+    - ../ros2_ws/src:/ros2_ws/src
+    - ../robot_app:/ros2_ws/robot_app
+    - ../maps:/ros2_ws/maps
+    - ../logs:/ros2_ws/logs
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+  environment:
+    ROS_DOMAIN_ID: "0"
+    LIBOT_BACKEND_URL: "${LIBOT_BACKEND_URL:-http://127.0.0.1:5205}"
+    DISPLAY: "${DISPLAY:-:0}"
+    QT_X11_NO_MITSHM: "1"
 services:
-
-  ros2:
-
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-
-    container_name: libot_ros2
-
-    network_mode: host
-
-    restart: unless-stopped
-
+  ros2-hardware:
+    <<: *ros2-common
+    profiles: [hardware]
+    container_name: libot_ros2_hardware
     devices:
       - "/dev/rplidar:/dev/rplidar"
       - "/dev/serial0:/dev/serial0"
+      - "/dev/snd:/dev/snd"
+    command: >-
+      bash -lc "source /opt/ros/jazzy/setup.bash && source /ros2_ws/install/setup.bash &&
+      ros2 launch libot_bringup robot_control.launch.py"
 
-    volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - /home/admin/.Xauthority:/root/.Xauthority:rw
-      - ../ros2_ws/src:/ros2_ws/src
-      - ../maps:/ros2_ws/maps
-      - ../logs:/ros2_ws/logs
-
+  ros2-simulation:
+    <<: *ros2-common
+    profiles: [simulation]
+    container_name: libot_ros2_simulation
+    network_mode: bridge
+    ports:
+      - "9001:9001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      DISPLAY: ":0"
-      XAUTHORITY: "/root/.Xauthority"
-      QT_X11_NO_MITSHM: "1"
       ROS_DOMAIN_ID: "0"
-
-    command:
-      - tail
-      - -f
-      - /dev/null
+      LIBOT_RUNTIME_ID: sim
+      LIBOT_TCP_PORT: "9001"
+      LIBOT_SIM_WORLD: library
+      LIBOT_BACKEND_URL: "${LIBOT_BACKEND_URL:-http://host.docker.internal:5205}"
+    command: >-
+      bash -lc "source /opt/ros/jazzy/setup.bash && source /ros2_ws/install/setup.bash &&
+      ros2 launch libot_bringup simulation_navigation.launch.py
+      backend_url:=$${LIBOT_BACKEND_URL}"

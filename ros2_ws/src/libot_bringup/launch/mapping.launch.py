@@ -1,5 +1,6 @@
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, TimerAction
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -36,6 +37,18 @@ def generate_launch_description():
     return LaunchDescription([
 
         DeclareLaunchArgument(
+            'use_hardware',
+            default_value='true',
+            description='Start robot sensors and base; set false when robot_control.launch.py owns hardware.',
+        ),
+
+        DeclareLaunchArgument(
+            'use_sim_time',
+            default_value='false',
+            description='Use the ROS simulated clock when mapping in Gazebo.',
+        ),
+
+        DeclareLaunchArgument(
             'lidar_port',
             default_value='/dev/rplidar',
             description='Serial device used by the RPLIDAR'
@@ -48,44 +61,23 @@ def generate_launch_description():
 
         # Publish the fixed URDF chain exactly once:
         # base_footprint -> base_link -> laser.
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(description_launch)
-        ),
-
-        # =========================
-        # RPLIDAR
-        # =========================
-        Node(
-            package='sllidar_ros2',
-            executable='sllidar_node',
-            name='sllidar_node',
-            output='screen',
-            respawn=True,
-            respawn_delay=3.0,
-            parameters=[{
-                'channel_type': 'serial',
-                'serial_port': LaunchConfiguration('lidar_port'),
-                'serial_baudrate': 115200,
-                'frame_id': 'laser',
-                'inverted': False,
-                'angle_compensate': True,
-            }],
-        ),
-
-        # =========================
-        # STM32
-        # =========================
-        Node(
-            package='libbot_stm32',
-            executable='stm32_bridge',
-            name='stm32_bridge',
-            output='screen',
-            parameters=[{
-                'port': LaunchConfiguration('stm32_port'),
-                'baudrate': 115200,
-                'use_sim_time': False,
-            }],
-        ),
+        GroupAction(condition=IfCondition(LaunchConfiguration('use_hardware')), actions=[
+            IncludeLaunchDescription(PythonLaunchDescriptionSource(description_launch)),
+            Node(
+                package='sllidar_ros2', executable='sllidar_node', name='sllidar_node',
+                output='screen', respawn=True, respawn_delay=3.0,
+                parameters=[{
+                    'channel_type': 'serial', 'serial_port': LaunchConfiguration('lidar_port'),
+                    'serial_baudrate': 115200, 'frame_id': 'laser', 'inverted': False,
+                    'angle_compensate': True,
+                }],
+            ),
+            Node(
+                package='libbot_stm32', executable='stm32_bridge', name='stm32_bridge',
+                output='screen',
+                parameters=[{'port': LaunchConfiguration('stm32_port'), 'baudrate': 115200, 'use_sim_time': False}],
+            ),
+        ]),
 
         # =========================
         # SLAM Toolbox
@@ -98,7 +90,7 @@ def generate_launch_description():
                     PythonLaunchDescriptionSource(slam_launch),
                     launch_arguments={
                         'slam_params_file': slam_params_file,
-                        'use_sim_time': 'false',
+                        'use_sim_time': LaunchConfiguration('use_sim_time'),
                     }.items()
                 )
             ]

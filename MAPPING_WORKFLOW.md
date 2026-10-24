@@ -174,7 +174,7 @@ source install/setup.bash
 
 ```bash
 cd /path/to/libot_pi
-docker compose -f docker/compose.yaml up -d
+docker compose -f docker/compose.yaml --profile hardware up -d
 docker exec -it <container_name> bash
 cd /ros2_ws
 source /opt/ros/humble/setup.bash

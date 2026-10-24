@@ -96,7 +96,27 @@ class MoveStep(BaseStep):
 
         return None
 
-    def _resolve_target(self, context: RobotContext) -> Optional[Dict[str, Any]]:
+    def _resolve_target(
+        self,
+        context: RobotContext,
+    ) -> Optional[Dict[str, Any]]:
+        
+        if self.target is not None:
+            normalized = self._normalize_target(self.resolve(context, self.target))
+
+            if normalized is not None:
+                return normalized
+
+        if self.endpoint_id is not None:
+            runtime_destination = self._normalize_target(context.get("destination"))
+            if runtime_destination is not None and "x" in runtime_destination and "y" in runtime_destination:
+                runtime_destination["endpoint_id"] = self.resolve(context, self.endpoint_id)
+                return runtime_destination
+            return {
+                "endpoint_id": self.resolve(context, self.endpoint_id),
+            }
+
+        # Context chỉ là fallback.
         candidate_keys: Iterable[str] = (
             "destination",
             "target_endpoint_id",
@@ -109,27 +129,18 @@ class MoveStep(BaseStep):
 
         for key in candidate_keys:
             value = context.get(key)
+
             if value is not None:
                 normalized = self._normalize_target(value)
+
                 if normalized is not None:
                     return normalized
-
-        if self.target is not None:
-            normalized = self._normalize_target(self.target)
-            if normalized is not None:
-                return normalized
-
-        if self.endpoint_id is not None:
-            return {"endpoint_id": self.endpoint_id}
 
         return None
 
     def _resolve_goal(self, context: RobotContext) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         if self.path_id is not None:
-            return {
-                "path_id": self.path_id,
-                "target": None,
-            }, None
+            return None, "MOVE path_id requires a route resolver; use a resolved target pose instead."
 
         target = self._resolve_target(context)
         if target is None:
@@ -138,6 +149,13 @@ class MoveStep(BaseStep):
         destination = dict(target)
         if "endpoint_id" in destination and not destination.get("endpoint_id"):
             return None, "endpoint_id must be a non-empty string."
+
+        if "x" not in destination or "y" not in destination:
+            return (
+                None,
+                "MOVE requires x and y. "
+                "endpoint_id is only used for identification.",
+            )
 
         if "x" in destination or "y" in destination:
             x_value = self._extract_numeric(destination.get("x"), 0.0)
@@ -210,6 +228,7 @@ class MoveStep(BaseStep):
         nav2_result_code = nav_result.get("nav2_result_code")
         duration_ms = nav_result.get("duration_ms")
         obstacle_info = nav_result.get("obstacle_info")
+        message = nav_result.get("message")
 
         context.set("last_move_target", requested_target)
         if isinstance(requested_target, dict) and requested_target.get("endpoint_id") is not None:
@@ -218,7 +237,7 @@ class MoveStep(BaseStep):
         if final_pose is not None:
             context.set("current_pose", final_pose)
 
-        return {
+        result = {
             "status": "ok" if move_status == "COMPLETED" else "error",
             "type": "MOVE",
             "move_status": move_status,
@@ -234,3 +253,6 @@ class MoveStep(BaseStep):
             "timeout_sec": self.timeout_sec,
             "current_pose": current_pose,
         }
+        if message:
+            result["message"] = message
+        return result

@@ -1,0 +1,239 @@
+{
+  "worldName": "library",
+  "room": {
+    "widthX": 50.0,
+    "lengthY": 60.0,
+    "resolution": 0.1,
+    "floorThickness": 0.1,
+    "wallHeight": 4.0,
+    "wallThickness": 0.25,
+    "doorWidth": 3.0
+  },
+  "robotSpawn": {
+    "x": 0.0,
+    "y": -27.2,
+    "z": 0.15,
+    "yaw": 1.57079632679
+  },
+  "simulationBookTarget": {
+    "shelfId": "bookshelf_west_inner",
+    "label": "Kệ A3 · sách mô phỏng",
+    "x": -0.8,
+    "y": -0.5,
+    "yaw": 3.14159265359
+  },
+  "rooms": [
+    {
+      "id": "reading_room",
+      "type": "reading_room",
+      "label": "Reading room",
+      "x": 0.0,
+      "y": 22.0,
+      "size": [40.0, 14.0],
+      "doorSide": "south",
+      "doorwayWidth": 3.0,
+      "wallThickness": 0.2,
+      "wallHeight": 2.8,
+      "color": "#E5D8BA"
+    },
+    {
+      "id": "toilet_room",
+      "type": "toilet",
+      "label": "Toilet",
+      "x": -18.0,
+      "y": -22.0,
+      "size": [10.0, 12.0],
+      "doorSide": "north",
+      "doorwayWidth": 1.4,
+      "wallThickness": 0.18,
+      "wallHeight": 2.5,
+      "color": "#C9E3E5"
+    }
+  ],
+  "furniture": [
+    {
+      "id": "bookshelf_west_outer",
+      "type": "bookshelf",
+      "label": "Bookshelf 1",
+      "x": -8.5,
+      "y": 2.0,
+      "size": [
+        0.65,
+        14.0,
+        2.4
+      ]
+    },
+    {
+      "id": "bookshelf_west_inner",
+      "type": "bookshelf",
+      "label": "Kệ A3 · sách Robotics",
+      "x": -2.0,
+      "y": 2.0,
+      "size": [
+        0.65,
+        14.0,
+        2.4
+      ]
+    },
+    {
+      "id": "bookshelf_east_inner",
+      "type": "bookshelf",
+      "label": "Bookshelf 3",
+      "x": 3.0,
+      "y": 2.0,
+      "size": [
+        0.65,
+        14.0,
+        2.4
+      ]
+    },
+    {
+      "id": "bookshelf_east_outer",
+      "type": "bookshelf",
+      "label": "Bookshelf 4",
+      "x": 8.5,
+      "y": 2.0,
+      "size": [
+        0.65,
+        14.0,
+        2.4
+      ]
+    },
+    {
+      "id": "librarian_counter",
+      "type": "counter",
+      "label": "Librarian counter",
+      "x": 11.0,
+      "y": -26.4,
+      "size": [
+        5.2,
+        1.6,
+        1.1
+      ]
+    },
+    {
+      "id": "toilet_fixture",
+      "type": "toilet_fixture",
+      "label": "Toilet",
+      "x": -20.7,
+      "y": -22.0,
+      "size": [1.15, 0.78, 0.82]
+    },
+    {
+      "id": "toilet_sink",
+      "type": "sink",
+      "label": "Wash basin",
+      "x": -15.2,
+      "y": -25.5,
+      "size": [1.15, 0.62, 0.9]
+    },
+    {
+      "id": "reading_table_west",
+      "type": "reading_table",
+      "label": "Reading area table",
+      "x": -15.0,
+      "y": 27.2,
+      "size": [
+        3.2,
+        1.4,
+        0.76
+      ]
+    },
+    {
+      "id": "reading_chair_west_1",
+      "type": "chair",
+      "label": "Reading chair",
+      "x": -16.0,
+      "y": 25.85,
+      "size": [
+        0.52,
+        0.52,
+        0.85
+      ]
+    },
+    {
+      "id": "reading_chair_west_2",
+      "type": "chair",
+      "label": "Reading chair",
+      "x": -14.0,
+      "y": 25.85,
+      "size": [
+        0.52,
+        0.52,
+        0.85
+      ]
+    },
+    {
+      "id": "reading_table_center",
+      "type": "reading_table",
+      "label": "Reading area table",
+      "x": 0.0,
+      "y": 27.2,
+      "size": [
+        3.2,
+        1.4,
+        0.76
+      ]
+    },
+    {
+      "id": "reading_chair_center_1",
+      "type": "chair",
+      "label": "Reading chair",
+      "x": -1.0,
+      "y": 25.85,
+      "size": [
+        0.52,
+        0.52,
+        0.85
+      ]
+    },
+    {
+      "id": "reading_chair_center_2",
+      "type": "chair",
+      "label": "Reading chair",
+      "x": 1.0,
+      "y": 25.85,
+      "size": [
+        0.52,
+        0.52,
+        0.85
+      ]
+    },
+    {
+      "id": "reading_table_east",
+      "type": "reading_table",
+      "label": "Reading area table",
+      "x": 15.0,
+      "y": 27.2,
+      "size": [
+        3.2,
+        1.4,
+        0.76
+      ]
+    },
+    {
+      "id": "reading_chair_east_1",
+      "type": "chair",
+      "label": "Reading chair",
+      "x": 14.0,
+      "y": 25.85,
+      "size": [
+        0.52,
+        0.52,
+        0.85
+      ]
+    },
+    {
+      "id": "reading_chair_east_2",
+      "type": "chair",
+      "label": "Reading chair",
+      "x": 16.0,
+      "y": 25.85,
+      "size": [
+        0.52,
+        0.52,
+        0.85
+      ]
+    }
+  ]
+}

@@ -5,6 +5,11 @@
     "buffer_size": 4096,
     "timeout": 5
   },
+  "runtime": {
+    "id": "real",
+    "backend_url": "http://127.0.0.1:5205",
+    "telemetry_hz": 5
+  },
   "robot": {
     "name": "libot_pi",
     "max_speed": 1.0,
@@ -17,14 +22,22 @@
     },
     "scanner": {
       "enabled": true,
-      "device": "camera"
+      "device": "imx500-tcp://127.0.0.1:9011",
+      "timeout_sec": 5
+    },
+    "motion_safety": {
+      "enabled": true,
+      "method": "ros_topic",
+      "topic": "/cmd_vel"
     },
     "ui": {
       "enabled": true,
-      "screen": "lcd"
+      "screen": "lcd",
+      "driver": "tkinter"
     },
     "speaker": {
       "enabled": true,
+      "driver": "espeak",
       "volume": 70
     }
   },

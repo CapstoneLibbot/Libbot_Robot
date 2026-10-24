@@ -1,5 +1,12 @@
 # Chạy mapping LiBot
 
+## Giao diện điều khiển robot thật
+
+`docker compose --profile hardware up -d --build` khởi động `robot_control.launch.py`:
+robot app, LiDAR, STM32 và TF; SLAM/Nav2 được mở riêng từ trang FE `/robot-mapping`.
+Trang FE gửi lệnh lái, xem map `/map`, lưu PGM/YAML trên robot cùng snapshot database,
+và khởi chạy Nav2 từ map đã chọn. Không chạy thêm launch phần cứng trong container này.
+
 Không chạy riêng `description.launch.py`, `sllidar_a1_launch.py`,
 `static_transform_publisher` hoặc `slam_toolbox` cùng lúc với launch bên dưới.
 `mapping.launch.py` đã khởi động tất cả các node cần thiết. Chạy trùng node sẽ
@@ -7,7 +14,7 @@ tạo nhiều TF publisher và có thể làm bản đồ bị lệch/chồng l�
 
 ```bash
 cd ~/Libbot/Libbot_Robot
-docker exec -it libot_ros2 bash
+docker exec -it libot_ros2_hardware bash
 
 source /opt/ros/jazzy/setup.bash
 cd /ros2_ws
@@ -18,7 +25,8 @@ source install/setup.bash
 
 ros2 launch libot_bringup mapping.launch.py \
   lidar_port:=/dev/rplidar \
-  stm32_port:=/dev/serial0
+  stm32_port:=/dev/serial0 \
+  use_hardware:=false
 ```
 
 Trong RViz dùng `Fixed Frame: map`, sau đó thêm `/map` và `/scan`.
@@ -57,8 +65,8 @@ trùng LiDAR, STM32 bridge và robot state publisher.
 
 ```bash
 cd ~/Libbot/Libbot_Robot
-docker compose -f docker/compose.yaml up -d --build
-docker exec -it libot_ros2 bash
+docker compose -f docker/compose.yaml --profile hardware up -d --build
+docker exec -it libot_ros2_hardware bash
 
 source /opt/ros/jazzy/setup.bash
 cd /ros2_ws
@@ -70,7 +78,9 @@ source install/setup.bash
 ros2 launch libot_bringup navigation.launch.py \
   map:=/ros2_ws/maps/library_map.yaml \
   lidar_port:=/dev/rplidar \
-  stm32_port:=/dev/serial0
+  stm32_port:=/dev/serial0 \
+  use_hardware:=false \
+  start_workflow_app:=false
 ```
 
 Khi RViz mở:
@@ -85,7 +95,7 @@ Khi RViz mở:
 Kiểm tra nhanh trong terminal khác nếu robot không chạy:
 
 ```bash
-docker exec -it libot_ros2 bash
+docker exec -it libot_ros2_hardware bash
 source /opt/ros/jazzy/setup.bash
 source /ros2_ws/install/setup.bash
 

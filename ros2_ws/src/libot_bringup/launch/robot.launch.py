@@ -1,8 +1,10 @@
 import os
+import sys
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -20,6 +22,8 @@ def generate_launch_description():
     lidar_port = LaunchConfiguration("lidar_port")
     stm32_port = LaunchConfiguration("stm32_port")
     use_sim_time = LaunchConfiguration("use_sim_time")
+    start_workflow_app = LaunchConfiguration("start_workflow_app")
+    robot_app_path = LaunchConfiguration("robot_app_path")
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -36,6 +40,16 @@ def generate_launch_description():
             "use_sim_time",
             default_value="false",
             description="Use the simulation clock",
+        ),
+        DeclareLaunchArgument(
+            "start_workflow_app",
+            default_value="true",
+            description="Start the Python workflow TCP server for backend commands",
+        ),
+        DeclareLaunchArgument(
+            "robot_app_path",
+            default_value="/ros2_ws/robot_app/main.py",
+            description="Absolute path to robot_app/main.py",
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(description_launch),
@@ -69,5 +83,11 @@ def generate_launch_description():
                 "baudrate": 115200,
                 "use_sim_time": use_sim_time,
             }],
+        ),
+        ExecuteProcess(
+            cmd=[sys.executable, robot_app_path],
+            name="libot_workflow_app",
+            output="screen",
+            condition=IfCondition(start_workflow_app),
         ),
     ])
