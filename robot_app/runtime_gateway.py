@@ -24,6 +24,7 @@ class RobotRuntimeGateway:
     STM32_ERROR_STATUS_PREFIXES = ("UART_TX_ERROR,", "MCU_ERROR,")
     MANUAL_WHEEL_L_PLUS_W_M = 0.30
     NAV2_STARTUP_TIMEOUT_SEC = 60.0
+    AUTO_NAVIGATION_RETRY_SEC = 5.0
     AMCL_LOCALIZATION_TIMEOUT_SEC = 20.0
     AMCL_MIN_STABLE_SAMPLES = 5
     AMCL_MAX_SCAN_AGE_SEC = 1.0
@@ -525,6 +526,120 @@ class RobotRuntimeGateway:
             return {"status": "accepted"}
         except OSError as exc:
             return self._failure(f"Could not start SLAM mapping: {exc}")
+
+    def _auto_navigation_loop(self) -> None:
+        with self._lock:
+            self.navigation_mode_state = "FETCHING_MAP"
+        while self._running and not self._navigation_bootstrap_complete:
+            try:
+                latest = self._get_backend_json(
+                    f"{self.backend_url}/api/robot-runtimes/real/maps/latest"
+                )
+                if not isinstance(latest, dict) or not latest.get("id"):
+                    raise RuntimeError("Backend does not have a saved robot map yet.")
+                map_id = str(latest["id"])
+                saved = self._get_backend_json(f"{self.backend_url}/api/maps/{map_id}")
+                grid = self._grid_from_saved_map(saved)
+                yaml_path, _ = self._write_grid_files(
+                    grid, self.maps_dir / f"backend_{map_id.replace('-', '')}"
+                )
+                result = self._start_navigation_mode(str(yaml_path), map_id=map_id)
+                if result.get("status") != "accepted":
+                    raise RuntimeError(str(result.get("message") or "Could not start Nav2."))
+                self._navigation_bootstrap_complete = True
+                return
+            except (
+                OSError,
+                ValueError,
+                RuntimeError,
+                HTTPError,
+                URLError,
+                json.JSONDecodeError,
+            ) as exc:
+                with self._lock:
+                    self.navigation_mode_state = "FETCHING_MAP"
+                    self.navigation_ready_state = False
+                    self.error = f"AUTO_NAVIGATION_WAITING: {exc}"
+                deadline = time.monotonic() + self.AUTO_NAVIGATION_RETRY_SEC
+                while self._running and time.monotonic() < deadline:
+                    time.sleep(0.1)
+
+    @staticmethod
+    def _get_backend_json(url: str) -> Any:
+        req = request.Request(url, headers={"Accept": "application/json"})
+        with request.urlopen(req, timeout=10.0) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    @staticmethod
+    def _grid_from_saved_map(saved: Any) -> Dict[str, Any]:
+        if not isinstance(saved, dict):
+            raise ValueError("Saved map response is not an object.")
+        data = saved.get("data")
+        if not isinstance(data, dict) or data.get("format") != "occupancy-grid-v1":
+            raise ValueError("Saved map is not an occupancy-grid-v1 map.")
+        width = int(saved.get("width", 0))
+        height = int(saved.get("height", 0))
+        resolution = float(data.get("resolution", 0.0))
+        origin = data.get("origin")
+        cells = data.get("cells")
+        if (
+            width <= 0
+            or height <= 0
+            or not math.isfinite(resolution)
+            or resolution <= 0
+            or not isinstance(origin, list)
+            or len(origin) < 3
+            or not all(
+                isinstance(value, (int, float)) and math.isfinite(float(value))
+                for value in origin[:3]
+            )
+            or not isinstance(cells, list)
+            or len(cells) != width * height
+            or not all(isinstance(value, int) and -1 <= value <= 100 for value in cells)
+        ):
+            raise ValueError("Saved occupancy grid dimensions or values are invalid.")
+        return {
+            "timestamp": str(data.get("timestamp") or datetime.now(timezone.utc).isoformat()),
+            "width": width,
+            "height": height,
+            "resolution": resolution,
+            "origin_x": float(origin[0]),
+            "origin_y": float(origin[1]),
+            "origin_yaw": float(origin[2]),
+            "data": cells,
+        }
+
+    @staticmethod
+    def _write_grid_files(grid: Dict[str, Any], output: Path) -> tuple[Path, Path]:
+        width = int(grid["width"])
+        height = int(grid["height"])
+        values = grid["data"]
+        if width <= 0 or height <= 0 or len(values) != width * height:
+            raise ValueError("Occupancy grid dimensions do not match its data.")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        pgm_path = output.with_suffix(".pgm")
+        yaml_path = output.with_suffix(".yaml")
+        pixels = bytearray()
+        for row in range(height - 1, -1, -1):
+            for value in values[row * width:(row + 1) * width]:
+                occupancy = int(value)
+                pixels.append(
+                    205
+                    if occupancy < 0
+                    else max(0, min(254, round(254 - occupancy * 2.54)))
+                )
+        pgm_temp = pgm_path.with_suffix(".pgm.tmp")
+        yaml_temp = yaml_path.with_suffix(".yaml.tmp")
+        pgm_temp.write_bytes(f"P5\n{width} {height}\n255\n".encode("ascii") + pixels)
+        yaml_temp.write_text(
+            f"image: {pgm_path.name}\nmode: trinary\nresolution: {grid['resolution']}\n"
+            f"origin: [{grid['origin_x']}, {grid['origin_y']}, {grid['origin_yaw']}]\n"
+            "negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\n",
+            encoding="utf-8",
+        )
+        pgm_temp.replace(pgm_path)
+        yaml_temp.replace(yaml_path)
+        return yaml_path, pgm_path
 
     def _start_navigation_mode(
         self,
