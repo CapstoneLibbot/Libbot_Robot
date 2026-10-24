@@ -74,6 +74,11 @@ def generate_launch_description():
             description="Start the Python workflow TCP server for backend commands",
         ),
         DeclareLaunchArgument(
+            "autostart_navigation",
+            default_value="true",
+            description="Automatically activate the navigation lifecycle nodes",
+        ),
+        DeclareLaunchArgument(
             "robot_app_path",
             default_value="/ros2_ws/robot_app/main.py",
             description="Absolute path to robot_app/main.py",
@@ -209,7 +214,9 @@ def generate_launch_description():
             name="lifecycle_manager_navigation",
             output="screen",
             parameters=[{
-                "autostart": True,
+                "autostart": ParameterValue(
+                    LaunchConfiguration("autostart_navigation"), value_type=bool
+                ),
                 "node_names": [
                     "controller_server",
                     "smoother_server",
