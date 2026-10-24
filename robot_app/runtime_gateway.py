@@ -740,6 +740,14 @@ class RobotRuntimeGateway:
             time.sleep(0.2)
         return False
 
+    def _navigation_lifecycle_summary(self) -> str:
+        labels = {1: "unconfigured", 2: "inactive", 3: "active", 4: "finalized"}
+        states = []
+        for name in self.NAVIGATION_NODES:
+            state = self._lifecycle_state(name, 1.0)
+            states.append(f"{name}={labels.get(state, 'unavailable')}")
+        return ", ".join(states)
+
     def _manage_navigation_lifecycle(self, command: int, timeout_sec: float) -> bool:
         client = self._manage_navigation_client
         if client is None or not client.wait_for_service(timeout_sec=min(timeout_sec, 5.0)):
@@ -798,16 +806,26 @@ class RobotRuntimeGateway:
                 self.navigation_mode_state = "ACTIVATING"
                 self.navigation_ready_state = False
 
-            if self._navigation_activation_attempted:
-                self._manage_navigation_lifecycle(
-                    self._manage_lifecycle_type.Request.RESET, 30.0
+            current_states = [self._lifecycle_state(name, 1.0) for name in self.NAVIGATION_NODES]
+            needs_reset = self._navigation_activation_attempted or any(
+                state not in (None, 1) for state in current_states
+            )
+            if needs_reset and not self._manage_navigation_lifecycle(
+                self._manage_lifecycle_type.Request.RESET, 30.0
+            ):
+                raise RuntimeError(
+                    "Could not reset the partially started Nav2 stack: "
+                    + self._navigation_lifecycle_summary()
                 )
             self._navigation_activation_attempted = True
             if not self._manage_navigation_lifecycle(
                 self._manage_lifecycle_type.Request.STARTUP,
                 self.NAV2_STARTUP_TIMEOUT_SEC,
             ):
-                raise RuntimeError("The Nav2 lifecycle manager could not activate the navigation nodes.")
+                raise RuntimeError(
+                    "The Nav2 lifecycle manager could not activate the navigation nodes: "
+                    + self._navigation_lifecycle_summary()
+                )
             if not self._wait_for_lifecycle_nodes(
                 self.NAVIGATION_NODES, self.NAV2_STARTUP_TIMEOUT_SEC
             ):
