@@ -890,11 +890,20 @@ class RobotRuntimeGateway:
             }:
                 return self._failure("Nav2 is not ready to accept an initial pose.")
             previous_goal_handle = self._goal_handle
+            had_active_goal = (
+                previous_goal_handle is not None
+                or self.active_goal_id is not None
+                or self.navigation_state in {"SENDING", "NAVIGATING", "CANCELING"}
+            )
             self._goal_timeout_generation += 1
             self._navigation_timeout_clear_locked()
             self.active_goal_id = None
             self._goal_handle = None
-            self.navigation_state = "CANCELED"
+            # Setting/retrying an initial pose is not itself a canceled
+            # navigation. Only expose CANCELED when an actual goal was
+            # interrupted; otherwise the navigation channel remains idle
+            # while AMCL reports LOCALIZING independently.
+            self.navigation_state = "CANCELED" if had_active_goal else "IDLE"
             self._localization_attempt_id += 1
             attempt_id = self._localization_attempt_id
             self._amcl_samples.clear()
@@ -1279,20 +1288,32 @@ class RobotRuntimeGateway:
 
     def _on_navigation_result(self, future: Any, command_id: str, generation: int) -> None:
         try:
-            status = int(future.result().status)
+            wrapped_result = future.result()
+            status = int(wrapped_result.status)
             state = {4: "SUCCEEDED", 5: "CANCELED", 6: "FAILED"}.get(status, f"STATUS_{status}")
         except Exception as exc:
             state = "FAILED"
             result_error = str(exc)
         else:
-            result_error = None
+            action_result = getattr(wrapped_result, "result", None)
+            error_code = int(getattr(action_result, "error_code", 0) or 0)
+            error_message = str(getattr(action_result, "error_msg", "") or "").strip()
+            if state == "FAILED":
+                details = [f"code={error_code}"]
+                if error_message:
+                    details.append(error_message)
+                result_error = f"NAVIGATION_FAILED: {'; '.join(details)}"
+            elif state.startswith("STATUS_"):
+                result_error = f"NAVIGATION_RESULT_{state}"
+            else:
+                result_error = None
         with self._lock:
             if self.active_goal_id != command_id or self._goal_timeout_generation != generation:
                 return
             self._navigation_timeout_clear_locked()
             self.navigation_state = state
             self._goal_handle = None
-            self.error = result_error or ("NAVIGATION_FAILED" if state == "FAILED" else None)
+            self.error = result_error
             if state in {"SUCCEEDED", "CANCELED", "FAILED"}:
                 self.active_goal_id = None
 

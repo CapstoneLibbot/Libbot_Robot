@@ -87,8 +87,12 @@ controller_server:
     - FollowPath
     use_realtime_priority: false
     progress_checker:
-      plugin: nav2_controller::SimpleProgressChecker
+      # Count both translation and rotation as progress. The simple checker
+      # only measures XY distance and can abort while the robot is correctly
+      # rotating to the requested final yaw at the goal.
+      plugin: nav2_controller::PoseProgressChecker
       required_movement_radius: 0.05
+      required_movement_angle: 0.10
       movement_time_allowance: 30.0
     general_goal_checker:
       stateful: true

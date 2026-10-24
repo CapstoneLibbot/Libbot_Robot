@@ -260,6 +260,8 @@ class Nav2StabilityTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "accepted")
         self.assertEqual(gateway.navigation_mode_state, "LOCALIZING")
+        self.assertEqual(gateway.localization_state, "LOCALIZING")
+        self.assertEqual(gateway.navigation_state, "IDLE")
         self.assertEqual(len(gateway._amcl_samples), 0)
 
     def test_progress_feedback_restarts_timeout(self):
@@ -344,6 +346,26 @@ class Nav2StabilityTests(unittest.TestCase):
         self.assertTrue(cancelled)
         self.assertTrue(stopped)
 
+    def test_aborted_navigation_preserves_nav2_error_details(self):
+        gateway = RobotRuntimeGateway()
+        gateway.active_goal_id = "goal-1"
+        gateway._goal_timeout_generation = 7
+        wrapped = SimpleNamespace(
+            status=6,
+            result=SimpleNamespace(error_code=9003, error_msg="Failed to make progress"),
+        )
+
+        gateway._on_navigation_result(
+            SimpleNamespace(result=lambda: wrapped), "goal-1", 7
+        )
+
+        self.assertEqual(gateway.navigation_state, "FAILED")
+        self.assertEqual(
+            gateway.error,
+            "NAVIGATION_FAILED: code=9003; Failed to make progress",
+        )
+        self.assertIsNone(gateway.active_goal_id)
+
 
 class Nav2ConfigurationTests(unittest.TestCase):
     def test_custom_behavior_trees_compute_once_then_follow_with_limited_recovery(self):
@@ -356,7 +378,13 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertEqual(root.attrib["BTCPP_format"], "4")
                 self.assertEqual(len(root.findall(f".//{compute_tag}")), 1)
                 self.assertEqual(len(root.findall(".//FollowPath")), 1)
-                self.assertEqual(root.find(".//" + compute_tag).attrib[goal_input], "{" + goal_input + "}")
+                compute = root.find(".//" + compute_tag)
+                follow = root.find(".//FollowPath")
+                self.assertEqual(compute.attrib[goal_input], "{" + goal_input + "}")
+                self.assertEqual(compute.attrib["error_code_id"], "{compute_path_error_code}")
+                self.assertEqual(compute.attrib["error_msg"], "{compute_path_error_msg}")
+                self.assertEqual(follow.attrib["error_code_id"], "{follow_path_error_code}")
+                self.assertEqual(follow.attrib["error_msg"], "{follow_path_error_msg}")
                 recovery = root.find(".//RecoveryNode")
                 self.assertEqual(recovery.attrib["number_of_retries"], "2")
                 tags = [element.tag for element in root.iter()]
@@ -393,7 +421,9 @@ class Nav2ConfigurationTests(unittest.TestCase):
         config = (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
         expected = (
             "publish_zero_velocity: true",
+            "plugin: nav2_controller::PoseProgressChecker",
             "required_movement_radius: 0.05",
+            "required_movement_angle: 0.10",
             "movement_time_allowance: 30.0",
             "stateful: true",
             "xy_goal_tolerance: 0.10",
