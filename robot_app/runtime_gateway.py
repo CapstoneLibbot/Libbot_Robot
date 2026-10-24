@@ -1336,7 +1336,10 @@ class RobotRuntimeGateway:
         now = time.monotonic()
         with self._lock:
             self._map = grid
-            should_post = now - self._last_map_post >= 1.0
+            should_post = (
+                self.runtime_id == "real"
+                and now - self._last_map_post >= 1.0
+            )
             if should_post:
                 self._last_map_post = now
         if should_post:
@@ -1419,6 +1422,8 @@ class RobotRuntimeGateway:
             time.sleep(1.0)
 
     def _retry_map_delivery(self) -> None:
+        if self.runtime_id != "real":
+            return
         now = time.monotonic()
         with self._lock:
             if self._map is None or now - self._last_map_post < 5.0:
@@ -1503,4 +1508,3 @@ class RobotRuntimeGateway:
     @staticmethod
     def _failure(message: str) -> Dict[str, Any]:
         return {"status": "error", "message": message}
-
