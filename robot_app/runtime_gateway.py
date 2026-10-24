@@ -128,6 +128,7 @@ class RobotRuntimeGateway:
             from rclpy.action import ActionClient
             from rclpy.executors import MultiThreadedExecutor
             from rclpy.parameter import Parameter
+            from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
             from sensor_msgs.msg import LaserScan
             from sensor_msgs.msg import BatteryState
             from std_msgs.msg import String
@@ -161,7 +162,18 @@ class RobotRuntimeGateway:
         self._node.create_subscription(
             String, "/stm32_bridge/status", self._on_stm32_bridge_status, 10
         )
-        self._node.create_subscription(OccupancyGrid, "/map", self._on_map, 1)
+        # map_server publishes its map with transient-local durability.  A
+        # volatile subscription can miss that one-shot publication when the
+        # lifecycle manager activates map_server before DDS discovery has
+        # matched this gateway.  Request transient-local durability so the
+        # saved map is replayed and Nav2 startup does not time out waiting for
+        # a map that was already published.
+        map_qos = QoSProfile(depth=1)
+        map_qos.reliability = ReliabilityPolicy.RELIABLE
+        map_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self._node.create_subscription(
+            OccupancyGrid, "/map", self._on_map, map_qos
+        )
         self._node.create_subscription(
             PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl_pose, 10
         )
