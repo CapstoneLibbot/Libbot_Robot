@@ -5,7 +5,7 @@
 # navigation.launch.py starts only the Nav2 nodes configured in this file.
 # collision_monitor, route_server and docking_server are omitted intentionally.
 # Ensure Nav2 controller output reaches STM32 bridge /cmd_vel via launch remapping.
-# The STM32 hardware bridge uses mecanum kinematics; Gazebo currently simulates differential drive.
+# Gazebo and the current hardware model both expose differential-drive motion.
 
 amcl:
   ros__parameters:
@@ -35,7 +35,7 @@ amcl:
     recovery_alpha_fast: 0.0
     recovery_alpha_slow: 0.0
     resample_interval: 1
-    robot_model_type: nav2_amcl::OmniMotionModel
+    robot_model_type: nav2_amcl::DifferentialMotionModel
     save_pose_rate: 0.5
     sigma_hit: 0.2
     tf_broadcast: true
@@ -202,7 +202,7 @@ planner_server:
       plugin: nav2_navfn_planner::NavfnPlanner
       tolerance: 0.5
       use_astar: true
-      allow_unknown: false
+      allow_unknown: true
 smoother_server:
   ros__parameters:
     smoother_plugins:
