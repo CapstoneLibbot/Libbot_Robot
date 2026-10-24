@@ -8,6 +8,7 @@ import signal
 import subprocess
 import threading
 import time
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -23,6 +24,15 @@ class RobotRuntimeGateway:
     STM32_ERROR_STATUS_PREFIXES = ("UART_TX_ERROR,", "MCU_ERROR,")
     MANUAL_WHEEL_L_PLUS_W_M = 0.30
     NAV2_STARTUP_TIMEOUT_SEC = 60.0
+    AMCL_LOCALIZATION_TIMEOUT_SEC = 20.0
+    AMCL_MIN_STABLE_SAMPLES = 5
+    AMCL_MAX_SCAN_AGE_SEC = 1.0
+    AMCL_MAX_XY_VARIANCE = 0.04
+    AMCL_MAX_YAW_VARIANCE = 0.03
+    AMCL_MAX_SAMPLE_POSITION_SPREAD_M = 0.10
+    AMCL_MAX_SAMPLE_YAW_SPREAD_RAD = 0.15
+    NAVIGATION_PROGRESS_DISTANCE_M = 0.05
+    NAV2_ACTIVATION_TIMEOUT_SEC = 30.0
 
     def __init__(self, settings: Optional[Dict[str, Any]] = None):
         config = settings or {}
@@ -43,6 +53,7 @@ class RobotRuntimeGateway:
         self.battery: Optional[float] = None
         self._last_battery_monotonic: Optional[float] = None
         self.localization_state = "UNLOCALIZED"
+        self.navigation_mode_state = "STOPPED"
         self.navigation_state = "IDLE"
         self.active_goal_id: Optional[str] = None
         self.planned_path: list[Dict[str, float]] = []
@@ -52,12 +63,29 @@ class RobotRuntimeGateway:
         self._action_client: Any = None
         self._goal_handle: Any = None
         self._goal_timeout_timer: Optional[threading.Timer] = None
+        self._goal_timeout_generation = 0
+        self._goal_timeout_sec = 180.0
+        self._goal_best_distance_remaining: Optional[float] = None
+        self._goal_progress_pose: Optional[tuple[float, float]] = None
         self._initial_pose_pub: Any = None
         self._stop_pub: Any = None
+        self._nomotion_update_client: Any = None
+        self._navigation_lifecycle_client: Any = None
+        self._navigation_lifecycle_started = False
+        self._navigation_lifecycle_paused = False
+        self._navigation_activation_lock = threading.Lock()
         self._tf_buffer: Any = None
         self._tf_listener: Any = None
         self._tf_timer: Any = None
         self._lock = threading.RLock()
+        self._localization_condition = threading.Condition(self._lock)
+        self._amcl_samples: deque[Dict[str, Any]] = deque(maxlen=self.AMCL_MIN_STABLE_SAMPLES)
+        self._last_scan_monotonic: Optional[float] = None
+        self._last_scan_ros_stamp_ns: Optional[int] = None
+        self._localization_attempt_start_stamp_ns = 0
+        self._localization_attempt_id = 0
+        self._active_map_id: Optional[str] = None
+        self._navigation_map_id: Optional[str] = None
         self._manual_command_lock = threading.Lock()
         self._stm32_ack_condition = threading.Condition()
         self._stm32_velocity_ack_sequence = 0
@@ -87,8 +115,11 @@ class RobotRuntimeGateway:
             from rclpy.action import ActionClient
             from rclpy.executors import MultiThreadedExecutor
             from rclpy.parameter import Parameter
+            from sensor_msgs.msg import LaserScan
             from sensor_msgs.msg import BatteryState
             from std_msgs.msg import String
+            from std_srvs.srv import Empty
+            from nav2_msgs.srv import ManageLifecycleNodes
             from tf2_ros import Buffer, TransformListener
         except ImportError as exc:
             self.error = f"ROS_UNAVAILABLE: {exc}"
@@ -106,6 +137,13 @@ class RobotRuntimeGateway:
             PoseWithCovarianceStamped, "/initialpose", 10
         )
         self._stop_pub = self._node.create_publisher(Twist, "/cmd_vel", 10)
+        self._nomotion_update_client = self._node.create_client(
+            Empty, "/request_nomotion_update"
+        )
+        self._navigation_lifecycle_client = self._node.create_client(
+            ManageLifecycleNodes,
+            "/lifecycle_manager_navigation/manage_nodes",
+        )
         self._node.create_subscription(
             String, "/stm32_bridge/status", self._on_stm32_bridge_status, 10
         )
@@ -114,6 +152,7 @@ class RobotRuntimeGateway:
             PoseWithCovarianceStamped, "/amcl_pose", self._on_amcl_pose, 10
         )
         self._node.create_subscription(Odometry, "/odom", self._on_odom, 20)
+        self._node.create_subscription(LaserScan, "/scan", self._on_scan, 10)
         self._node.create_subscription(Path, "/plan", self._on_plan, 10)
         self._node.create_subscription(BatteryState, "/battery_state", self._on_battery, 10)
         self._node.create_subscription(String, "/libot/patrol_observation", self._on_patrol_observation, 10)
@@ -162,7 +201,10 @@ class RobotRuntimeGateway:
         self._publish_stop()
 
     def navigation_ready(self, timeout_sec: float = 2.0) -> bool:
-        return self._action_client is not None and self._action_client.wait_for_server(timeout_sec=timeout_sec)
+        if self._action_client is None or not self._action_client.wait_for_server(timeout_sec=timeout_sec):
+            return False
+        with self._lock:
+            return self.navigation_mode_state == "READY"
 
     def _on_patrol_observation(self, message: Any) -> None:
         try:
@@ -201,6 +243,7 @@ class RobotRuntimeGateway:
                     self._manual_active = False
                     resume_navigation = bool(payload.get("resume_navigation", False)) and self._resume_navigation_after_manual_stop
                     map_path = self._navigation_map_path
+                    map_id = self._navigation_map_id
                     if resume_navigation and not hard_error:
                         self._resume_navigation_after_manual_stop = False
                     elif resume_navigation:
@@ -220,7 +263,7 @@ class RobotRuntimeGateway:
                 with self._lock:
                     self._resume_navigation_after_manual_stop = True
                 return self._failure("Nav2 cannot be restarted because no previously used map path is available.")
-            result = self._start_navigation_mode(map_path)
+            result = self._start_navigation_mode(map_path, map_id)
             if result.get("status") != "accepted":
                 with self._lock:
                     self._resume_navigation_after_manual_stop = True
@@ -243,14 +286,27 @@ class RobotRuntimeGateway:
         if command == "save_map":
             return self._save_map(str(payload.get("file_stem", "")))
         if command == "start_navigation_mode":
-            return self._start_navigation_mode(str(payload.get("map_path", "")))
+            return self._start_navigation_mode(
+                str(payload.get("map_path", "")),
+                str(payload.get("map_id", "")).strip() or None,
+            )
         if command == "stop_navigation_mode":
             self._terminate_process(self._navigation_process)
             self._navigation_process = None
             self._publish_stop()
             with self._lock:
+                self._localization_attempt_id += 1
+                self._amcl_samples.clear()
                 self.localization_state = "UNLOCALIZED"
+                self.navigation_mode_state = "STOPPED"
+                self.navigation_state = "IDLE"
+                self.active_goal_id = None
+                self._goal_handle = None
                 self._pose_map_path = None
+                self._navigation_lifecycle_started = False
+                self._navigation_lifecycle_paused = False
+                self._active_map_id = None
+                self._navigation_timeout_clear_locked()
                 self.error = (
                     "INITIAL_POSE_REQUIRED: Set the robot's current pose on the map "
                     "before sending a navigation goal."
@@ -450,7 +506,11 @@ class RobotRuntimeGateway:
         except OSError as exc:
             return self._failure(f"Could not start SLAM mapping: {exc}")
 
-    def _start_navigation_mode(self, map_path: str) -> Dict[str, Any]:
+    def _start_navigation_mode(
+        self,
+        map_path: str,
+        map_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         if self._mapping_process is not None and self._mapping_process.poll() is None:
             return self._failure("Stop SLAM mapping before starting Nav2.")
         path = Path(map_path)
@@ -460,12 +520,23 @@ class RobotRuntimeGateway:
             return self._failure("Nav2 is already running.")
         try:
             with self._lock:
-                initial_pose = (
-                    dict(self.pose)
-                    if self.localization_state == "LOCALIZED"
-                    and self._pose_map_path == str(path)
-                    else None
-                )
+                self._localization_attempt_id += 1
+                self._amcl_samples.clear()
+                self.localization_state = "UNLOCALIZED"
+                self.navigation_mode_state = "FETCHING_MAP"
+                self.navigation_state = "IDLE"
+                self.active_goal_id = None
+                self._goal_handle = None
+                self._goal_timeout_generation += 1
+                self._navigation_timeout_clear_locked()
+                self._navigation_lifecycle_started = False
+                self._navigation_lifecycle_paused = False
+                self._navigation_map_id = map_id or path.stem
+                self._active_map_id = self._navigation_map_id
+                self._pose_map_path = None
+                self._map = None
+                self._last_map_post = 0.0
+                self.error = None
             self._navigation_process = subprocess.Popen(
                 [
                     "ros2", "launch", "libot_bringup", "navigation.launch.py",
@@ -482,63 +553,104 @@ class RobotRuntimeGateway:
             if self._navigation_process.poll() is not None:
                 return_code = self._navigation_process.returncode
                 self._navigation_process = None
+                with self._lock:
+                    self.navigation_mode_state = "ERROR"
+                    self.error = f"NAV2_START_FAILED: launch exited with code {return_code}."
                 return self._failure(
                     f"Nav2 launch exited immediately with code {return_code}; check the robot container logs."
                 )
-            if self._action_client is None or not self._action_client.wait_for_server(
-                timeout_sec=self.NAV2_STARTUP_TIMEOUT_SEC
-            ):
+
+            startup_deadline = time.monotonic() + self.NAV2_STARTUP_TIMEOUT_SEC
+            nav_lifecycle_ready = (
+                self._navigation_lifecycle_client is not None
+                and startup_deadline > time.monotonic()
+                and self._navigation_lifecycle_client.wait_for_service(
+                    timeout_sec=max(0.0, startup_deadline - time.monotonic())
+                )
+            )
+            localization_ready = (
+                self._nomotion_update_client is not None
+                and startup_deadline > time.monotonic()
+                and self._nomotion_update_client.wait_for_service(
+                    timeout_sec=max(0.0, startup_deadline - time.monotonic())
+                )
+            )
+            if not nav_lifecycle_ready or not localization_ready:
                 self._terminate_process(self._navigation_process)
                 self._navigation_process = None
+                with self._lock:
+                    self.navigation_mode_state = "ERROR"
+                    self.error = "NAV2_START_FAILED: map, AMCL, or lifecycle services did not become ready."
                 return self._failure(
-                    "Nav2 action server /navigate_to_pose did not become available within "
+                    "Map/AMCL or navigation lifecycle services did not become available within "
                     f"{self.NAV2_STARTUP_TIMEOUT_SEC:.0f} seconds; "
                     "the launch was stopped. Check the robot container logs."
                 )
+
+            while time.monotonic() < startup_deadline:
+                with self._lock:
+                    map_received = self._map is not None
+                if map_received:
+                    break
+                if self._navigation_process.poll() is not None:
+                    break
+                time.sleep(0.1)
+            with self._lock:
+                map_received = self._map is not None
+            if not map_received:
+                self._terminate_process(self._navigation_process)
+                self._navigation_process = None
+                with self._lock:
+                    self.navigation_mode_state = "ERROR"
+                    self.error = "NAV2_START_FAILED: map server did not publish a map."
+                return self._failure("Nav2 map server did not publish /map before startup timed out.")
+
             with self._lock:
                 self._navigation_map_path = str(path)
                 self._resume_navigation_after_manual_stop = False
-                if initial_pose is None:
-                    self.localization_state = "UNLOCALIZED"
-                    self._pose_map_path = None
-                    self.error = (
-                        "INITIAL_POSE_REQUIRED: Set the robot's current pose on the map "
-                        "before sending a navigation goal."
-                    )
-                else:
-                    self.error = None
-            if initial_pose is not None:
-                threading.Thread(
-                    target=self._seed_nav2_pose,
-                    args=(initial_pose,),
-                    daemon=True,
-                ).start()
-            return {"status": "accepted"}
+                self.navigation_mode_state = "ACTIVATING" if self.use_sim_time else "WAITING_INITIAL_POSE"
+                self.localization_state = "UNLOCALIZED"
+                self._pose_map_path = None
+                self.error = None if self.use_sim_time else (
+                    "INITIAL_POSE_REQUIRED: Set the robot's current pose on the map before sending a goal."
+                )
+
+            if self.use_sim_time:
+                remaining_startup = max(0.0, startup_deadline - time.monotonic())
+                if not self._call_navigation_lifecycle(
+                    "STARTUP", timeout_sec=min(10.0, remaining_startup)
+                ):
+                    self._terminate_process(self._navigation_process)
+                    self._navigation_process = None
+                    with self._lock:
+                        self.navigation_mode_state = "ERROR"
+                        self.error = "NAV2_ACTIVATION_FAILED"
+                    return self._failure("Could not activate the Nav2 lifecycle nodes for simulation.")
+                with self._lock:
+                    self._navigation_lifecycle_started = True
+                    self._navigation_lifecycle_paused = False
+                if self._action_client is None or not self._action_client.wait_for_server(
+                    timeout_sec=max(0.0, startup_deadline - time.monotonic())
+                ):
+                    self._terminate_process(self._navigation_process)
+                    self._navigation_process = None
+                    with self._lock:
+                        self.navigation_mode_state = "ERROR"
+                        self.error = "NAV2_ACTIVATION_FAILED: /navigate_to_pose is unavailable."
+                    return self._failure("Nav2 action server did not become available after activation.")
+                self._update_pose_from_tf()
+                with self._lock:
+                    self.navigation_mode_state = "READY"
+            return {
+                "status": "accepted",
+                "navigation_mode_state": self.navigation_mode_state,
+                "active_map_id": self._active_map_id,
+            }
         except OSError as exc:
+            with self._lock:
+                self.navigation_mode_state = "ERROR"
+                self.error = f"NAV2_START_FAILED: {exc}"
             return self._failure(f"Could not start Nav2: {exc}")
-
-    def _seed_nav2_pose(self, pose: Dict[str, float]) -> None:
-        for delay in (4.0, 1.0, 1.0):
-            if not self._running:
-                return
-            time.sleep(delay)
-            if self._navigation_process is None or self._navigation_process.poll() is not None:
-                return
-            if self._node is None or self._initial_pose_pub is None:
-                return
-            from geometry_msgs.msg import PoseWithCovarianceStamped
-
-            message = PoseWithCovarianceStamped()
-            message.header.frame_id = "map"
-            message.header.stamp = self._node.get_clock().now().to_msg()
-            message.pose.pose.position.x = pose["x"]
-            message.pose.pose.position.y = pose["y"]
-            message.pose.pose.orientation.z = math.sin(pose["yaw"] / 2.0)
-            message.pose.pose.orientation.w = math.cos(pose["yaw"] / 2.0)
-            message.pose.covariance[0] = 0.1
-            message.pose.covariance[7] = 0.1
-            message.pose.covariance[35] = 0.05
-            self._initial_pose_pub.publish(message)
 
     def _save_map(self, file_stem: str) -> Dict[str, Any]:
         with self._lock:
@@ -624,25 +736,277 @@ class RobotRuntimeGateway:
                 "localization_state": self.localization_state,
                 "message": "SIM uses the Gazebo ground-truth pose.",
             }
+        if self._navigation_process is None or self._navigation_process.poll() is not None:
+            return self._failure("Start Nav2 and load a map before setting the initial pose.")
         from geometry_msgs.msg import PoseWithCovarianceStamped
 
         x, y, yaw = values
-        message = PoseWithCovarianceStamped()
-        message.header.frame_id = "map"
-        message.header.stamp = self._node.get_clock().now().to_msg()
-        message.pose.pose.position.x = x
-        message.pose.pose.position.y = y
-        message.pose.pose.orientation.z = math.sin(yaw / 2.0)
-        message.pose.pose.orientation.w = math.cos(yaw / 2.0)
-        message.pose.covariance[0] = 0.25
-        message.pose.covariance[7] = 0.25
-        message.pose.covariance[35] = 0.0685
-        self._initial_pose_pub.publish(message)
+        try:
+            attempt_start_stamp_ns = int(self._node.get_clock().now().nanoseconds)
+        except Exception:
+            attempt_start_stamp_ns = 0
         with self._lock:
+            if self.navigation_mode_state not in {
+                "WAITING_INITIAL_POSE", "LOCALIZING", "ACTIVATING", "READY", "ERROR"
+            }:
+                return self._failure("Nav2 is not ready to accept an initial pose.")
+            previous_goal_handle = self._goal_handle
+            self._goal_timeout_generation += 1
+            self._navigation_timeout_clear_locked()
+            self.active_goal_id = None
+            self._goal_handle = None
+            self.navigation_state = "CANCELED"
+            self._localization_attempt_id += 1
+            attempt_id = self._localization_attempt_id
+            self._amcl_samples.clear()
+            self._last_scan_monotonic = None
+            self._last_scan_ros_stamp_ns = None
+            self._localization_attempt_start_stamp_ns = attempt_start_stamp_ns
             self.localization_state = "LOCALIZING"
+            self.navigation_mode_state = "LOCALIZING"
             self.error = None
             self._pose_map_path = self._navigation_map_path
+            self._localization_condition.notify_all()
+
+        if previous_goal_handle is not None:
+            try:
+                previous_goal_handle.cancel_goal_async()
+            except Exception:
+                pass
+        self._publish_stop()
+        with self._navigation_activation_lock:
+            with self._lock:
+                if attempt_id != self._localization_attempt_id:
+                    return self._failure("This initial-pose request was superseded by a newer request.")
+                lifecycle_started = self._navigation_lifecycle_started
+                lifecycle_paused = self._navigation_lifecycle_paused
+            if lifecycle_started and not lifecycle_paused:
+                if not self._call_navigation_lifecycle("PAUSE", timeout_sec=5.0):
+                    self._fail_localization_attempt(attempt_id, "NAV2_PAUSE_FAILED")
+                    return self._failure("Nav2 could not pause before relocalization.")
+                with self._lock:
+                    self._navigation_lifecycle_paused = True
+
+        with self._navigation_activation_lock:
+            with self._lock:
+                if attempt_id != self._localization_attempt_id:
+                    return self._failure("This initial-pose request was superseded by a newer request.")
+            for _ in range(3):
+                message = PoseWithCovarianceStamped()
+                message.header.frame_id = "map"
+                message.header.stamp = self._node.get_clock().now().to_msg()
+                message.pose.pose.position.x = x
+                message.pose.pose.position.y = y
+                message.pose.pose.orientation.z = math.sin(yaw / 2.0)
+                message.pose.pose.orientation.w = math.cos(yaw / 2.0)
+                message.pose.covariance[0] = 0.25
+                message.pose.covariance[7] = 0.25
+                message.pose.covariance[35] = 0.0685
+                self._initial_pose_pub.publish(message)
+                time.sleep(0.1)
+
+        threading.Thread(
+            target=self._localization_worker,
+            args=(attempt_id,),
+            daemon=True,
+            name=f"libot-localization-{attempt_id}",
+        ).start()
         return {"status": "accepted", "localization_state": "LOCALIZING"}
+
+    def _localization_worker(self, attempt_id: int) -> None:
+        if not self._running:
+            return
+        deadline = time.monotonic() + self.AMCL_LOCALIZATION_TIMEOUT_SEC
+        next_nomotion_request = 0.0
+        stable = False
+        while self._running and time.monotonic() < deadline:
+            with self._lock:
+                if attempt_id != self._localization_attempt_id:
+                    return
+
+            now = time.monotonic()
+            if now >= next_nomotion_request and self._nomotion_update_client is not None:
+                try:
+                    if self._nomotion_update_client.service_is_ready():
+                        from std_srvs.srv import Empty
+
+                        self._nomotion_update_client.call_async(Empty.Request())
+                except Exception:
+                    pass
+                next_nomotion_request = now + 0.5
+
+            tf_pose = self._lookup_map_pose()
+            try:
+                ros_now_ns = int(self._node.get_clock().now().nanoseconds)
+            except Exception:
+                ros_now_ns = 0
+            with self._lock:
+                samples = tuple(self._amcl_samples)
+                scan_fresh = (
+                    self._last_scan_monotonic is not None
+                    and now - self._last_scan_monotonic <= self.AMCL_MAX_SCAN_AGE_SEC
+                    and self._last_scan_ros_stamp_ns is not None
+                    and ros_now_ns > 0
+                    and -100_000_000 <= ros_now_ns - self._last_scan_ros_stamp_ns <= 1_000_000_000
+                )
+            if tf_pose is not None and scan_fresh and self._amcl_window_is_stable(samples):
+                stable = True
+                break
+            with self._localization_condition:
+                self._localization_condition.wait(timeout=0.1)
+
+        if not self._running:
+            return
+        if not stable:
+            self._fail_localization_attempt(attempt_id, "AMCL_NOT_STABLE")
+            return
+
+        with self._navigation_activation_lock:
+            with self._lock:
+                if attempt_id != self._localization_attempt_id:
+                    return
+                self.navigation_mode_state = "ACTIVATING"
+                lifecycle_started = self._navigation_lifecycle_started
+
+            command = "RESUME" if lifecycle_started else "STARTUP"
+            if not self._call_navigation_lifecycle(command, timeout_sec=10.0):
+                paused = self._call_navigation_lifecycle("PAUSE", timeout_sec=5.0)
+                if paused:
+                    with self._lock:
+                        self._navigation_lifecycle_started = True
+                        self._navigation_lifecycle_paused = True
+                self._fail_localization_attempt(attempt_id, "NAV2_ACTIVATION_FAILED")
+                return
+
+            with self._lock:
+                self._navigation_lifecycle_started = True
+                self._navigation_lifecycle_paused = False
+                still_current = attempt_id == self._localization_attempt_id
+            if not still_current:
+                paused = self._call_navigation_lifecycle("PAUSE", timeout_sec=5.0)
+                if paused:
+                    with self._lock:
+                        self._navigation_lifecycle_paused = True
+                return
+
+            if self._action_client is None or not self._action_client.wait_for_server(
+                timeout_sec=self.NAV2_ACTIVATION_TIMEOUT_SEC
+            ):
+                paused = self._call_navigation_lifecycle("PAUSE", timeout_sec=5.0)
+                if paused:
+                    with self._lock:
+                        self._navigation_lifecycle_paused = True
+                self._fail_localization_attempt(attempt_id, "NAV2_ACTIVATION_FAILED")
+                return
+
+            with self._lock:
+                if attempt_id != self._localization_attempt_id:
+                    stale_attempt = True
+                else:
+                    stale_attempt = False
+            if stale_attempt:
+                paused = self._call_navigation_lifecycle("PAUSE", timeout_sec=5.0)
+                if paused:
+                    with self._lock:
+                        self._navigation_lifecycle_paused = True
+                return
+            with self._lock:
+                self.localization_state = "LOCALIZED"
+                self.navigation_mode_state = "READY"
+                self.error = None
+                self._pose_map_path = self._navigation_map_path
+
+    def _call_navigation_lifecycle(self, command: str, timeout_sec: float) -> bool:
+        client = self._navigation_lifecycle_client
+        if client is None:
+            return False
+        try:
+            deadline = time.monotonic() + max(0.0, timeout_sec)
+            if not client.wait_for_service(timeout_sec=timeout_sec):
+                return False
+            from nav2_msgs.srv import ManageLifecycleNodes
+
+            lifecycle_request = ManageLifecycleNodes.Request()
+            command_value = getattr(type(lifecycle_request), command, None)
+            if command_value is None:
+                command_value = getattr(ManageLifecycleNodes.Request, command, None)
+            if command_value is None:
+                return False
+            lifecycle_request.command = command_value
+            future = client.call_async(lifecycle_request)
+            completed = threading.Event()
+            future.add_done_callback(lambda _: completed.set())
+            if not completed.wait(max(0.0, deadline - time.monotonic())):
+                return False
+            response = future.result()
+            return bool(response and response.success)
+        except Exception:
+            return False
+
+    def _fail_localization_attempt(self, attempt_id: int, error_code: str) -> None:
+        with self._lock:
+            if attempt_id != self._localization_attempt_id:
+                return
+            self.localization_state = "UNLOCALIZED"
+            self.navigation_mode_state = "ERROR"
+            self.error = error_code
+            self._amcl_samples.clear()
+        self._publish_stop()
+
+    @classmethod
+    def _amcl_window_is_stable(cls, samples: Any) -> bool:
+        if len(samples) < cls.AMCL_MIN_STABLE_SAMPLES:
+            return False
+        window = samples[-cls.AMCL_MIN_STABLE_SAMPLES:]
+        if any(
+            not all(math.isfinite(float(sample[key])) for key in ("x", "y", "yaw", "cov_x", "cov_y", "cov_yaw"))
+            or sample["cov_x"] < 0.0
+            or sample["cov_y"] < 0.0
+            or sample["cov_yaw"] < 0.0
+            or sample["cov_x"] > cls.AMCL_MAX_XY_VARIANCE
+            or sample["cov_y"] > cls.AMCL_MAX_XY_VARIANCE
+            or sample["cov_yaw"] > cls.AMCL_MAX_YAW_VARIANCE
+            for sample in window
+        ):
+            return False
+        max_position_spread = max(
+            math.hypot(first["x"] - second["x"], first["y"] - second["y"])
+            for index, first in enumerate(window)
+            for second in window[index + 1:]
+        )
+        max_yaw_spread = max(
+            abs(math.atan2(
+                math.sin(first["yaw"] - second["yaw"]),
+                math.cos(first["yaw"] - second["yaw"]),
+            ))
+            for index, first in enumerate(window)
+            for second in window[index + 1:]
+        )
+        return (
+            max_position_spread <= cls.AMCL_MAX_SAMPLE_POSITION_SPREAD_M
+            and max_yaw_spread <= cls.AMCL_MAX_SAMPLE_YAW_SPREAD_RAD
+        )
+
+    def _lookup_map_pose(self) -> Optional[Dict[str, float]]:
+        if self._tf_buffer is None:
+            return None
+        try:
+            from rclpy.time import Time
+
+            transform = self._tf_buffer.lookup_transform(
+                "map", "base_footprint", Time()
+            ).transform
+        except Exception:
+            return None
+        rotation = transform.rotation
+        return {
+            "x": float(transform.translation.x),
+            "y": float(transform.translation.y),
+            "yaw": math.atan2(
+                2.0 * (rotation.w * rotation.z + rotation.x * rotation.y),
+                1.0 - 2.0 * (rotation.y * rotation.y + rotation.z * rotation.z),
+            ),
+        }
 
     def _start_navigation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         target = payload.get("target") or {}
@@ -651,23 +1015,42 @@ class RobotRuntimeGateway:
             return self._failure("Navigation target requires finite x, y and theta values.")
         if self._node is None or self._action_client is None:
             return self._failure(self.error or "ROS is unavailable.")
+        command_id = str(payload.get("command_id") or "").strip()
+        if not command_id:
+            return self._failure("Navigation goal requires a command_id.")
         if self.use_sim_time and self._node.get_clock().now().nanoseconds <= 0:
             return self._failure(
                 "SIM_CLOCK_UNAVAILABLE: No nonzero ROS simulated time has been received on /clock."
             )
+        try:
+            timeout_sec = max(1.0, min(float(payload.get("timeout_sec", 180)), 600.0))
+        except (TypeError, ValueError, OverflowError):
+            timeout_sec = 180.0
         with self._lock:
             if self.navigation_state in {"SENDING", "NAVIGATING", "CANCELING"}:
                 return self._failure("A navigation goal is already active.")
-            self.active_goal_id = str(payload.get("command_id") or "")
+            if self.navigation_mode_state != "READY" or self.localization_state != "LOCALIZED":
+                return self._failure("Nav2 is not READY and localized.")
+            self._navigation_timeout_clear_locked()
+            self._goal_timeout_generation += 1
+            generation = self._goal_timeout_generation
+            self.active_goal_id = command_id
             self.navigation_state = "SENDING"
             self.error = None
+            self._goal_timeout_sec = timeout_sec
+            self._goal_best_distance_remaining = None
+            self._goal_progress_pose = (self.pose["x"], self.pose["y"])
+            self._reset_goal_timeout_locked(command_id, generation)
 
         if not self._action_client.server_is_ready():
             self._action_client.wait_for_server(timeout_sec=2.0)
         if not self._action_client.server_is_ready():
             with self._lock:
-                self.navigation_state = "FAILED"
-                self.error = "NAV2_UNAVAILABLE"
+                if self.active_goal_id == command_id and self._goal_timeout_generation == generation:
+                    self._navigation_timeout_clear_locked()
+                    self.navigation_state = "FAILED"
+                    self.error = "NAV2_UNAVAILABLE"
+                    self.active_goal_id = None
             return self._failure("Nav2 action server is unavailable.")
 
         from nav2_msgs.action import NavigateToPose
@@ -680,17 +1063,25 @@ class RobotRuntimeGateway:
         goal.pose.pose.position.y = y
         goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
         goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
-        future = self._action_client.send_goal_async(goal, feedback_callback=self._on_feedback)
-        future.add_done_callback(self._on_goal_response)
-        timeout_sec = max(1.0, min(float(payload.get("timeout_sec", 180)), 600.0))
-        self._goal_timeout_timer = threading.Timer(
-            timeout_sec,
-            self._on_goal_timeout,
-            args=(self.active_goal_id,),
-        )
-        self._goal_timeout_timer.daemon = True
-        self._goal_timeout_timer.start()
-        return {"status": "accepted", "command_id": self.active_goal_id}
+        try:
+            future = self._action_client.send_goal_async(
+                goal,
+                feedback_callback=lambda feedback: self._on_feedback(
+                    feedback, command_id, generation
+                ),
+            )
+            future.add_done_callback(
+                lambda result: self._on_goal_response(result, command_id, generation)
+            )
+        except Exception as exc:
+            with self._lock:
+                if self.active_goal_id == command_id and self._goal_timeout_generation == generation:
+                    self._navigation_timeout_clear_locked()
+                    self.navigation_state = "FAILED"
+                    self.error = str(exc)
+                    self.active_goal_id = None
+            return self._failure(f"Unable to send navigation goal: {exc}")
+        return {"status": "accepted", "command_id": command_id}
 
     def _cancel_navigation(self, command_id: str) -> Dict[str, Any]:
         with self._lock:
@@ -698,67 +1089,152 @@ class RobotRuntimeGateway:
                 return self._failure("The requested command is not the active goal.")
             goal_handle = self._goal_handle
             self.navigation_state = "CANCELING"
+            self._navigation_timeout_clear_locked()
         if goal_handle is not None:
-            goal_handle.cancel_goal_async()
-        if self._goal_timeout_timer is not None:
-            self._goal_timeout_timer.cancel()
+            try:
+                goal_handle.cancel_goal_async()
+            except Exception:
+                pass
         self._publish_stop()
         return {"status": "accepted", "command_id": self.active_goal_id}
 
-    def _on_goal_response(self, future: Any) -> None:
+    def _on_goal_response(self, future: Any, command_id: str, generation: int) -> None:
         try:
             goal_handle = future.result()
             if goal_handle is None or not goal_handle.accepted:
-                if self._goal_timeout_timer is not None:
-                    self._goal_timeout_timer.cancel()
                 with self._lock:
+                    if self.active_goal_id != command_id or self._goal_timeout_generation != generation:
+                        return
+                    self._navigation_timeout_clear_locked()
                     self.navigation_state = "REJECTED"
                     self.error = "GOAL_REJECTED"
+                    self._goal_handle = None
                     self.active_goal_id = None
                 return
             with self._lock:
-                self._goal_handle = goal_handle
-                self.navigation_state = "NAVIGATING"
+                if self.active_goal_id != command_id or self._goal_timeout_generation != generation:
+                    stale = True
+                else:
+                    stale = False
+                    cancel_requested = self.navigation_state == "CANCELING"
+                    self._goal_handle = goal_handle
+                    if not cancel_requested:
+                        self.navigation_state = "NAVIGATING"
+            if stale:
+                goal_handle.cancel_goal_async()
+                return
+            if cancel_requested:
+                goal_handle.cancel_goal_async()
             result_future = goal_handle.get_result_async()
-            result_future.add_done_callback(self._on_navigation_result)
+            result_future.add_done_callback(
+                lambda result: self._on_navigation_result(result, command_id, generation)
+            )
         except Exception as exc:
-            if self._goal_timeout_timer is not None:
-                self._goal_timeout_timer.cancel()
             with self._lock:
-                self.navigation_state = "FAILED"
-                self.error = str(exc)
-                self.active_goal_id = None
+                if self.active_goal_id == command_id and self._goal_timeout_generation == generation:
+                    self._navigation_timeout_clear_locked()
+                    self.navigation_state = "FAILED"
+                    self.error = str(exc)
+                    self._goal_handle = None
+                    self.active_goal_id = None
 
-    def _on_navigation_result(self, future: Any) -> None:
-        if self._goal_timeout_timer is not None:
-            self._goal_timeout_timer.cancel()
+    def _on_navigation_result(self, future: Any, command_id: str, generation: int) -> None:
         try:
             status = int(future.result().status)
             state = {4: "SUCCEEDED", 5: "CANCELED", 6: "FAILED"}.get(status, f"STATUS_{status}")
         except Exception as exc:
             state = "FAILED"
-            self.error = str(exc)
+            result_error = str(exc)
+        else:
+            result_error = None
         with self._lock:
+            if self.active_goal_id != command_id or self._goal_timeout_generation != generation:
+                return
+            self._navigation_timeout_clear_locked()
             self.navigation_state = state
             self._goal_handle = None
+            self.error = result_error or ("NAVIGATION_FAILED" if state == "FAILED" else None)
             if state in {"SUCCEEDED", "CANCELED", "FAILED"}:
                 self.active_goal_id = None
 
-    def _on_goal_timeout(self, command_id: Optional[str]) -> None:
+    def _on_goal_timeout(self, command_id: Optional[str], generation: int) -> None:
         with self._lock:
-            if not command_id or self.active_goal_id != command_id:
+            if (
+                not command_id
+                or self.active_goal_id != command_id
+                or self._goal_timeout_generation != generation
+            ):
                 return
             goal_handle = self._goal_handle
             self.navigation_state = "FAILED"
-            self.error = "TIMEOUT"
+            self.error = "NO_PROGRESS_TIMEOUT"
             self.active_goal_id = None
+            self._goal_handle = None
+            self._goal_timeout_generation += 1
+            self._navigation_timeout_clear_locked()
         if goal_handle is not None:
-            goal_handle.cancel_goal_async()
+            try:
+                goal_handle.cancel_goal_async()
+            except Exception:
+                pass
         self._publish_stop()
 
-    def _on_feedback(self, _: Any) -> None:
+    def _on_feedback(self, feedback: Any, command_id: str, generation: int) -> None:
         with self._lock:
+            if self.active_goal_id != command_id or self._goal_timeout_generation != generation:
+                return
             self.navigation_state = "NAVIGATING"
+            detail = getattr(feedback, "feedback", feedback)
+            distance = getattr(detail, "distance_remaining", None)
+            try:
+                distance = float(distance)
+                if not math.isfinite(distance):
+                    distance = None
+            except (TypeError, ValueError, OverflowError):
+                distance = None
+
+            current_pose = (float(self.pose["x"]), float(self.pose["y"]))
+            moved = False
+            if self._goal_progress_pose is None:
+                self._goal_progress_pose = current_pose
+            else:
+                moved = math.hypot(
+                    current_pose[0] - self._goal_progress_pose[0],
+                    current_pose[1] - self._goal_progress_pose[1],
+                ) >= self.NAVIGATION_PROGRESS_DISTANCE_M
+            distance_progress = (
+                distance is not None
+                and self._goal_best_distance_remaining is not None
+                and self._goal_best_distance_remaining - distance >= self.NAVIGATION_PROGRESS_DISTANCE_M
+            )
+            if self._goal_best_distance_remaining is None and distance is not None:
+                self._goal_best_distance_remaining = distance
+            elif distance_progress:
+                self._goal_best_distance_remaining = distance
+            if moved or distance_progress:
+                self._goal_progress_pose = current_pose
+                self._reset_goal_timeout_locked(command_id, generation)
+
+    def _navigation_timeout_clear_locked(self) -> None:
+        timer = self._goal_timeout_timer
+        self._goal_timeout_timer = None
+        if timer is not None:
+            timer.cancel()
+        self._goal_best_distance_remaining = None
+        self._goal_progress_pose = None
+
+    def _reset_goal_timeout_locked(self, command_id: str, generation: int) -> None:
+        timer = self._goal_timeout_timer
+        if timer is not None:
+            timer.cancel()
+        timer = threading.Timer(
+            self._goal_timeout_sec,
+            self._on_goal_timeout,
+            args=(command_id, generation),
+        )
+        timer.daemon = True
+        self._goal_timeout_timer = timer
+        timer.start()
 
     def _on_amcl_pose(self, message: Any) -> None:
         if self.runtime_id == "sim":
@@ -766,35 +1242,56 @@ class RobotRuntimeGateway:
         pose = message.pose.pose
         with self._lock:
             self.pose = self._message_pose(pose)
-            self.localization_state = "LOCALIZED"
             if self._navigation_process is not None and self._navigation_process.poll() is None:
                 self._pose_map_path = self._navigation_map_path
+            if self.navigation_mode_state == "LOCALIZING":
+                stamp = getattr(getattr(message, "header", None), "stamp", None)
+                stamp_ns = (
+                    int(getattr(stamp, "sec", 0)) * 1_000_000_000
+                    + int(getattr(stamp, "nanosec", 0))
+                    if stamp is not None else 0
+                )
+                if (
+                    self._localization_attempt_start_stamp_ns > 0
+                    and stamp_ns < self._localization_attempt_start_stamp_ns
+                ):
+                    return
+                covariance = message.pose.covariance
+                self._amcl_samples.append({
+                    "x": self.pose["x"],
+                    "y": self.pose["y"],
+                    "yaw": self.pose["yaw"],
+                    "cov_x": float(covariance[0]),
+                    "cov_y": float(covariance[7]),
+                    "cov_yaw": float(covariance[35]),
+                    "received_at": time.monotonic(),
+                })
+                self._localization_condition.notify_all()
+
+    def _on_scan(self, message: Any) -> None:
+        with self._lock:
+            self._last_scan_monotonic = time.monotonic()
+            stamp = getattr(getattr(message, "header", None), "stamp", None)
+            self._last_scan_ros_stamp_ns = (
+                int(getattr(stamp, "sec", 0)) * 1_000_000_000
+                + int(getattr(stamp, "nanosec", 0))
+                if stamp is not None else None
+            )
+            self._localization_condition.notify_all()
 
     def _update_pose_from_tf(self) -> None:
-        if self._tf_buffer is None:
+        pose = self._lookup_map_pose()
+        if pose is None:
             return
-        try:
-            from rclpy.time import Time
-
-            transform = self._tf_buffer.lookup_transform(
-                "map", "base_footprint", Time()
-            ).transform
-        except Exception:
-            return
-
-        rotation = transform.rotation
-        yaw = math.atan2(
-            2.0 * (rotation.w * rotation.z + rotation.x * rotation.y),
-            1.0 - 2.0 * (rotation.y * rotation.y + rotation.z * rotation.z),
-        )
         with self._lock:
-            self.pose = {
-                "x": float(transform.translation.x),
-                "y": float(transform.translation.y),
-                "yaw": yaw,
-            }
-            self.localization_state = "LOCALIZED"
-            if self._navigation_process is not None and self._navigation_process.poll() is None:
+            self.pose = pose
+            if self.runtime_id == "sim":
+                self.localization_state = "LOCALIZED"
+            if (
+                self.runtime_id == "sim"
+                and self._navigation_process is not None
+                and self._navigation_process.poll() is None
+            ):
                 self._pose_map_path = self._navigation_map_path
             elif self._mapping_process is not None and self._mapping_process.poll() is None:
                 self._pose_map_path = None
@@ -939,6 +1436,13 @@ class RobotRuntimeGateway:
                 "error": self.error,
                 "mappingActive": mapping_active,
                 "navigationActive": navigation_active,
+                "navigationReady": bool(
+                    self.navigation_mode_state == "READY"
+                    and self._action_client is not None
+                    and self._action_client.server_is_ready()
+                ),
+                "navigationModeState": self.navigation_mode_state,
+                "activeMapId": self._active_map_id,
             }
         body = json.dumps(payload).encode("utf-8")
         req = request.Request(

@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <RecoveryNode number_of_retries="2" name="NavigateThroughPosesRecovery">
+      <SequenceWithMemory name="ComputeAndFollowPath">
+        <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"/>
+        <FollowPath path="{path}" controller_id="FollowPath"/>
+      </SequenceWithMemory>
+      <SequenceWithMemory name="ClearAndWaitBeforeRetry">
+        <ClearEntireCostmap name="ClearLocalCostmap" service_name="local_costmap/clear_entirely_local_costmap" server_timeout="5000"/>
+        <ClearEntireCostmap name="ClearGlobalCostmap" service_name="global_costmap/clear_entirely_global_costmap" server_timeout="5000"/>
+        <Wait wait_duration="1.0"/>
+      </SequenceWithMemory>
+    </RecoveryNode>
+  </BehaviorTree>
+</root>

@@ -176,7 +176,15 @@ def generate_launch_description():
             output="screen",
             parameters=[
                 LaunchConfiguration("params_file"),
-                {"use_sim_time": LaunchConfiguration("use_sim_time")},
+                {
+                    "use_sim_time": LaunchConfiguration("use_sim_time"),
+                    "default_nav_to_pose_bt_xml": os.path.join(
+                        bringup_share, "behavior_trees", "navigate_to_pose.xml"
+                    ),
+                    "default_nav_through_poses_bt_xml": os.path.join(
+                        bringup_share, "behavior_trees", "navigate_through_poses.xml"
+                    ),
+                },
             ],
         ),
         Node(
@@ -209,7 +217,9 @@ def generate_launch_description():
             name="lifecycle_manager_navigation",
             output="screen",
             parameters=[{
-                "autostart": True,
+                # The real runtime activates navigation only after AMCL is stable.
+                # The gateway explicitly starts this manager for SIM on map load.
+                "autostart": False,
                 "node_names": [
                     "controller_server",
                     "smoother_server",
