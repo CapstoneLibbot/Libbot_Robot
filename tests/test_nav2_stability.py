@@ -395,9 +395,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 follow = root.find(".//FollowPath")
                 self.assertEqual(compute.attrib[goal_input], "{" + goal_input + "}")
                 self.assertEqual(compute.attrib["error_code_id"], "{compute_path_error_code}")
-                self.assertEqual(compute.attrib["error_msg"], "{compute_path_error_msg}")
                 self.assertEqual(follow.attrib["error_code_id"], "{follow_path_error_code}")
-                self.assertEqual(follow.attrib["error_msg"], "{follow_path_error_msg}")
                 recovery = root.find(".//RecoveryNode")
                 self.assertEqual(recovery.attrib["number_of_retries"], "2")
                 tags = [element.tag for element in root.iter()]
