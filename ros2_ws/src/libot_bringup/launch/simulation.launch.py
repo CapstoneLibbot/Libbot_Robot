@@ -3,9 +3,10 @@ import json
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition, UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import Command
+from launch.substitutions import Command, LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -28,7 +29,16 @@ def generate_launch_description():
 
     robot_description = Command(["xacro ", urdf_file])
 
+    gz_launch = PythonLaunchDescriptionSource(
+        os.path.join(ros_gz_share, "launch", "gz_sim.launch.py")
+    )
+
     return LaunchDescription([
+        DeclareLaunchArgument(
+            "headless",
+            default_value="true",
+            description="Run Gazebo without its GUI when true",
+        ),
         Node(
             package="robot_state_publisher",
             executable="robot_state_publisher",
@@ -43,13 +53,20 @@ def generate_launch_description():
         ),
 
         IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(
-                os.path.join(ros_gz_share, "launch", "gz_sim.launch.py")
-            ),
+            gz_launch,
             launch_arguments={
                 "gz_args": ["-s -r -v 4 ", world_file],
                 "on_exit_shutdown": "true",
             }.items(),
+            condition=IfCondition(LaunchConfiguration("headless")),
+        ),
+        IncludeLaunchDescription(
+            gz_launch,
+            launch_arguments={
+                "gz_args": ["-r -v 4 ", world_file],
+                "on_exit_shutdown": "true",
+            }.items(),
+            condition=UnlessCondition(LaunchConfiguration("headless")),
         ),
 
         Node(

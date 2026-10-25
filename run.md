@@ -80,7 +80,8 @@ ros2 launch libot_bringup navigation.launch.py \
   lidar_port:=/dev/rplidar \
   stm32_port:=/dev/serial0 \
   use_hardware:=false \
-  start_workflow_app:=false
+  start_workflow_app:=false \
+  autostart_navigation:=true
 ```
 
 Khi RViz mở:

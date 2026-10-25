@@ -75,7 +75,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "autostart_navigation",
-            default_value="true",
+            default_value="false",
             description="Automatically activate the navigation lifecycle nodes",
         ),
         DeclareLaunchArgument(
@@ -222,9 +222,11 @@ def generate_launch_description():
             name="lifecycle_manager_navigation",
             output="screen",
             parameters=[{
-                # The real runtime activates navigation only after AMCL is stable.
-                # The gateway explicitly starts this manager for SIM on map load.
-                "autostart": False,
+                # The web runtime keeps this false and activates Nav2 after
+                # AMCL is stable. Standalone clients can opt in to autostart.
+                "autostart": ParameterValue(
+                    LaunchConfiguration("autostart_navigation"), value_type=bool
+                ),
                 "node_names": [
                     "controller_server",
                     "smoother_server",

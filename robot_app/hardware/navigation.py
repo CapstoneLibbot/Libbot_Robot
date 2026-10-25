@@ -111,7 +111,26 @@ class NavigationController:
             action_goal.pose.pose.orientation.z = math.sin(theta / 2.0)
             action_goal.pose.pose.orientation.w = math.cos(theta / 2.0)
 
-            send_future = action_client.send_goal_async(action_goal)
+            last_feedback_at = [0.0]
+
+            def report_feedback(feedback_message: Any) -> None:
+                detail = getattr(feedback_message, "feedback", None)
+                distance = getattr(detail, "distance_remaining", None)
+                try:
+                    distance = float(distance)
+                    if not math.isfinite(distance):
+                        return
+                except (TypeError, ValueError, OverflowError):
+                    return
+                now = time.monotonic()
+                if now - last_feedback_at[0] >= 1.0:
+                    print(f"Nav2 distance remaining: {distance:.2f} m", flush=True)
+                    last_feedback_at[0] = now
+
+            send_future = action_client.send_goal_async(
+                action_goal,
+                feedback_callback=report_feedback,
+            )
 
             rclpy.spin_until_future_complete(
                 node,
@@ -157,11 +176,31 @@ class NavigationController:
                     timeout_sec=5.0,
                 )
 
+                # Keep spinning for the action's terminal result after requesting
+                # cancellation; the cancel response alone does not finish the goal.
+                rclpy.spin_until_future_complete(
+                    node,
+                    result_future,
+                    timeout_sec=5.0,
+                )
+                if result_future.done():
+                    terminal_status = result_future.result().status
+                    terminal_name = {
+                        GoalStatus.STATUS_SUCCEEDED: "SUCCEEDED",
+                        GoalStatus.STATUS_CANCELED: "CANCELED",
+                        GoalStatus.STATUS_ABORTED: "ABORTED",
+                    }.get(terminal_status, f"STATUS_{terminal_status}")
+                    detail = f" Terminal Nav2 result after cancellation: {terminal_name}."
+                    result_code = "TIMEOUT"
+                else:
+                    detail = " Cancellation was requested, but no terminal Nav2 result arrived within 5 seconds."
+                    result_code = "TIMEOUT_CANCEL_RESULT_PENDING"
+
                 return self._result(
                     "FAILED",
-                    "TIMEOUT",
+                    result_code,
                     started_at,
-                    f"Navigation exceeded {timeout_sec} seconds.",
+                    f"Navigation exceeded {timeout_sec} seconds.{detail}",
                 )
 
             wrapped_result = result_future.result()

@@ -34,6 +34,7 @@ class RobotRuntimeGateway:
     AMCL_MAX_SAMPLE_YAW_SPREAD_RAD = 0.15
     NAVIGATION_PROGRESS_DISTANCE_M = 0.05
     NAV2_ACTIVATION_TIMEOUT_SEC = 30.0
+    NAV_GOAL_SUBMISSION_TIMEOUT_SEC = 10.0
     NAVIGATION_NODES = (
         "controller_server",
         "smoother_server",
@@ -74,6 +75,7 @@ class RobotRuntimeGateway:
         self._action_client: Any = None
         self._goal_handle: Any = None
         self._goal_timeout_timer: Optional[threading.Timer] = None
+        self._goal_submission_timer: Optional[threading.Timer] = None
         self._goal_timeout_generation = 0
         self._goal_timeout_sec = 180.0
         self._goal_best_distance_remaining: Optional[float] = None
@@ -212,6 +214,8 @@ class RobotRuntimeGateway:
 
     def stop(self) -> None:
         self._running = False
+        with self._lock:
+            self._navigation_timeout_clear_locked()
         self._publish_stop()
         self._terminate_process(self._mapping_process)
         self._terminate_process(self._navigation_process)
@@ -711,7 +715,7 @@ class RobotRuntimeGateway:
                     "use_hardware:=false",
                     "start_workflow_app:=false",
                     "use_rviz:=false",
-                    f"autostart_navigation:={'true' if self.use_sim_time else 'false'}",
+                    "autostart_navigation:=false",
                     f"use_sim_time:={'true' if self.use_sim_time else 'false'}",
                 ],
                 stdin=subprocess.DEVNULL,
@@ -1274,7 +1278,7 @@ class RobotRuntimeGateway:
             self._goal_timeout_sec = timeout_sec
             self._goal_best_distance_remaining = None
             self._goal_progress_pose = (self.pose["x"], self.pose["y"])
-            self._reset_goal_timeout_locked(command_id, generation)
+            self._start_goal_submission_timeout_locked(command_id, generation)
 
         if not self._action_client.server_is_ready():
             self._action_client.wait_for_server(timeout_sec=2.0)
@@ -1322,8 +1326,12 @@ class RobotRuntimeGateway:
             if command_id and self.active_goal_id and command_id != self.active_goal_id:
                 return self._failure("The requested command is not the active goal.")
             goal_handle = self._goal_handle
+            goal_pending = self.navigation_state == "SENDING" and goal_handle is None
             self.navigation_state = "CANCELING"
-            self._navigation_timeout_clear_locked()
+            if goal_pending:
+                self._navigation_progress_timeout_clear_locked()
+            else:
+                self._navigation_timeout_clear_locked()
         if goal_handle is not None:
             try:
                 goal_handle.cancel_goal_async()
@@ -1351,9 +1359,11 @@ class RobotRuntimeGateway:
                 else:
                     stale = False
                     cancel_requested = self.navigation_state == "CANCELING"
+                    self._goal_submission_timeout_clear_locked()
                     self._goal_handle = goal_handle
                     if not cancel_requested:
                         self.navigation_state = "NAVIGATING"
+                        self._reset_goal_timeout_locked(command_id, generation)
             if stale:
                 goal_handle.cancel_goal_async()
                 return
@@ -1425,6 +1435,22 @@ class RobotRuntimeGateway:
                 pass
         self._publish_stop()
 
+    def _on_goal_submission_timeout(self, command_id: str, generation: int) -> None:
+        with self._lock:
+            if (
+                self.active_goal_id != command_id
+                or self._goal_timeout_generation != generation
+                or self.navigation_state not in {"SENDING", "CANCELING"}
+            ):
+                return
+            self.navigation_state = "FAILED"
+            self.error = "GOAL_SUBMISSION_TIMEOUT"
+            self.active_goal_id = None
+            self._goal_handle = None
+            self._goal_timeout_generation += 1
+            self._navigation_timeout_clear_locked()
+        self._publish_stop()
+
     def _on_feedback(self, feedback: Any, command_id: str, generation: int) -> None:
         with self._lock:
             if self.active_goal_id != command_id or self._goal_timeout_generation != generation:
@@ -1462,12 +1488,33 @@ class RobotRuntimeGateway:
                 self._reset_goal_timeout_locked(command_id, generation)
 
     def _navigation_timeout_clear_locked(self) -> None:
+        self._goal_submission_timeout_clear_locked()
+        self._navigation_progress_timeout_clear_locked()
+
+    def _goal_submission_timeout_clear_locked(self) -> None:
+        timer = self._goal_submission_timer
+        self._goal_submission_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _navigation_progress_timeout_clear_locked(self) -> None:
         timer = self._goal_timeout_timer
         self._goal_timeout_timer = None
         if timer is not None:
             timer.cancel()
         self._goal_best_distance_remaining = None
         self._goal_progress_pose = None
+
+    def _start_goal_submission_timeout_locked(self, command_id: str, generation: int) -> None:
+        self._goal_submission_timeout_clear_locked()
+        timer = threading.Timer(
+            self.NAV_GOAL_SUBMISSION_TIMEOUT_SEC,
+            self._on_goal_submission_timeout,
+            args=(command_id, generation),
+        )
+        timer.daemon = True
+        self._goal_submission_timer = timer
+        timer.start()
 
     def _reset_goal_timeout_locked(self, command_id: str, generation: int) -> None:
         timer = self._goal_timeout_timer
