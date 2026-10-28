@@ -60,6 +60,7 @@ ros2 run nav2_map_server map_saver_cli \
 
 ## Chạy Nav2 và gửi goal trực tiếp từ RViz
 
+
 Không chạy `mapping.launch.py` cùng lúc với navigation vì hai launch file sẽ tạo
 trùng LiDAR, STM32 bridge và robot state publisher.
 

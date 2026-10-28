@@ -19,6 +19,32 @@ from urllib.error import HTTPError, URLError
 class RobotRuntimeGateway:
     """ROS-facing runtime adapter used by both Gazebo and the physical robot."""
 
+    ZONE_POLICIES = {
+        "KEEP_OUT": {"mask_layer": "keepout", "goal_rule": "BLOCK", "mask_value": "LETHAL"},
+        "SPEED_LIMIT": {
+            "mask_layer": "speed",
+            "requires_max_speed": True,
+            "mask_value": "SPEED_LIMIT",
+        },
+        "NO_STOP": {"goal_rule": "BLOCK"},
+    }
+    ZONE_MASK_LAYERS = {
+        "keepout": {
+            "filename_suffix": "keepout_mask",
+            "mode": "trinary",
+            "launch_argument": "keepout_mask",
+            "load_client": "_keepout_mask_load_client",
+            "encoding": "LETHAL",
+        },
+        "speed": {
+            "filename_suffix": "speed_mask",
+            "mode": "scale",
+            "launch_argument": "speed_mask",
+            "load_client": "_speed_mask_load_client",
+            "encoding": "SPEED_LIMIT",
+        },
+    }
+
     BATTERY_TIMEOUT_SEC = 3.0
     STM32_ACK_TIMEOUT_SEC = 0.15
     STM32_ERROR_STATUS_PREFIXES = ("UART_TX_ERROR,", "MCU_ERROR,")
@@ -710,9 +736,23 @@ class RobotRuntimeGateway:
         try:
             try:
                 normalized_zones = self._normalize_navigation_zones(zones or [])
-                keepout_mask, speed_mask, speed_multiplier = self._write_zone_masks(path, normalized_zones)
+                mask_paths, speed_multiplier, mask_cell_counts_by_layer = self._write_zone_masks(
+                    path, normalized_zones
+                )
             except (OSError, ValueError, RuntimeError, TypeError) as exc:
                 return self._failure(f"Could not prepare navigation zone filters: {exc}")
+            zone_counts_by_type = self._zone_counts_by_type(normalized_zones)
+            required_mask_layers = self._required_zone_mask_layers(normalized_zones)
+            empty_mask_layers = [
+                layer for layer in required_mask_layers
+                if mask_cell_counts_by_layer.get(layer, 0) == 0
+            ]
+            if empty_mask_layers:
+                return self._failure(
+                    "The selected map produced empty cells for required zone mask layer(s): "
+                    + ", ".join(sorted(empty_mask_layers))
+                    + ". Check that the zones overlap the selected map."
+                )
             with self._lock:
                 self._localization_attempt_id += 1
                 self._amcl_samples.clear()
@@ -744,8 +784,10 @@ class RobotRuntimeGateway:
                     "autostart_navigation:=false",
                     f"use_sim_time:={'true' if self.use_sim_time else 'false'}",
                     "zones_enabled:=true",
-                    f"keepout_mask:={keepout_mask}",
-                    f"speed_mask:={speed_mask}",
+                    *[
+                        f"{config['launch_argument']}:={mask_paths[layer]}"
+                        for layer, config in self.ZONE_MASK_LAYERS.items()
+                    ],
                     f"speed_filter_multiplier:={speed_multiplier:.12g}",
                 ],
                 stdin=subprocess.DEVNULL,
@@ -871,6 +913,9 @@ class RobotRuntimeGateway:
                 "status": "accepted",
                 "navigation_mode_state": self.navigation_mode_state,
                 "active_map_id": self._active_map_id,
+                "zone_count": len(normalized_zones),
+                "zone_counts_by_type": zone_counts_by_type,
+                "mask_cell_counts_by_layer": mask_cell_counts_by_layer,
             }
         except OSError as exc:
             with self._lock:
@@ -1302,7 +1347,8 @@ class RobotRuntimeGateway:
             if not isinstance(zone, dict):
                 raise ValueError(f"Navigation zone {index} must be an object.")
             zone_type = str(zone.get("zone_type", "")).strip().upper()
-            if zone_type not in {"KEEP_OUT", "SPEED_LIMIT", "NO_STOP"}:
+            policy = self.ZONE_POLICIES.get(zone_type)
+            if policy is None:
                 raise ValueError(f"Unsupported navigation zone type '{zone_type}'.")
             bounds = {key: float(zone.get(key)) for key in ("min_x", "min_y", "max_x", "max_y")}
             if not all(math.isfinite(value) for value in bounds.values()):
@@ -1310,7 +1356,7 @@ class RobotRuntimeGateway:
             if bounds["min_x"] >= bounds["max_x"] or bounds["min_y"] >= bounds["max_y"]:
                 raise ValueError("Navigation zone bounds must have positive width and height.")
             max_speed = 0.0
-            if zone_type == "SPEED_LIMIT":
+            if policy.get("requires_max_speed"):
                 try:
                     max_speed = float(zone.get("max_speed", 0.0) or 0.0)
                 except (TypeError, ValueError, OverflowError) as exc:
@@ -1319,6 +1365,23 @@ class RobotRuntimeGateway:
                     raise ValueError("SPEED_LIMIT requires max_speed greater than zero.")
             normalized.append({"zone_type": zone_type, **bounds, "max_speed": max_speed})
         return normalized
+
+    @staticmethod
+    def _zone_counts_by_type(zones: list[Dict[str, Any]]) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for zone in zones:
+            zone_type = zone["zone_type"]
+            counts[zone_type] = counts.get(zone_type, 0) + 1
+        return counts
+
+    @classmethod
+    def _required_zone_mask_layers(cls, zones: list[Dict[str, Any]]) -> set[str]:
+        return {
+            policy["mask_layer"]
+            for zone in zones
+            if (policy := cls.ZONE_POLICIES.get(zone["zone_type"])) is not None
+            and policy.get("mask_layer")
+        }
 
     def _update_navigation_zones(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         map_id = str(payload.get("map_id", "")).strip()
@@ -1338,20 +1401,27 @@ class RobotRuntimeGateway:
 
         try:
             normalized_zones = self._normalize_navigation_zones(zones)
-            keepout_mask, speed_mask, _ = self._write_zone_masks(
+            mask_paths, _, mask_cell_counts_by_layer = self._write_zone_masks(
                 Path(map_path), normalized_zones, previous_multiplier
             )
         except (OSError, ValueError, RuntimeError, TypeError) as exc:
             return self._failure(f"Could not prepare navigation zone filters: {exc}")
+        required_mask_layers = self._required_zone_mask_layers(normalized_zones)
+        empty_mask_layers = [
+            layer for layer in required_mask_layers
+            if mask_cell_counts_by_layer.get(layer, 0) == 0
+        ]
+        if empty_mask_layers:
+            return self._failure(
+                "The selected map produced empty cells for required zone mask layer(s): "
+                + ", ".join(sorted(empty_mask_layers))
+                + ". Check that the zones overlap the selected map."
+            )
 
-        keepout_result = self._load_mask_map(self._keepout_mask_load_client, keepout_mask)
-        if keepout_result is not None:
-            return self._failure(keepout_result)
-
-        speed_result = self._load_mask_map(self._speed_mask_load_client, speed_mask)
-        if speed_result is not None:
+        mask_result = self._load_navigation_zone_masks(mask_paths)
+        if mask_result is not None:
             self._restore_navigation_zone_filters(previous_zones, previous_multiplier, map_path)
-            return self._failure(speed_result)
+            return self._failure(mask_result)
 
         with self._lock:
             self._navigation_zones = normalized_zones
@@ -1360,6 +1430,8 @@ class RobotRuntimeGateway:
             "status": "accepted",
             "map_id": map_id,
             "zone_count": len(normalized_zones),
+            "zone_counts_by_type": self._zone_counts_by_type(normalized_zones),
+            "mask_cell_counts_by_layer": mask_cell_counts_by_layer,
             "navigation_replanned": replan_result is True,
         }
 
@@ -1419,6 +1491,14 @@ class RobotRuntimeGateway:
             return f"Nav2 rejected a navigation zone map (result {result_code})."
         return None
 
+    def _load_navigation_zone_masks(self, mask_paths: Dict[str, Path]) -> Optional[str]:
+        for layer, config in self.ZONE_MASK_LAYERS.items():
+            client = getattr(self, config["load_client"])
+            result = self._load_mask_map(client, mask_paths[layer])
+            if result is not None:
+                return result
+        return None
+
     def _restore_navigation_zone_filters(
         self,
         zones: list[Dict[str, Any]],
@@ -1426,47 +1506,32 @@ class RobotRuntimeGateway:
         map_path: str,
     ) -> None:
         try:
-            keepout_mask, speed_mask, _ = self._write_zone_masks(
+            mask_paths, _, _ = self._write_zone_masks(
                 Path(map_path), zones, multiplier
             )
-            self._load_mask_map(self._keepout_mask_load_client, keepout_mask)
-            self._load_mask_map(self._speed_mask_load_client, speed_mask)
+            self._load_navigation_zone_masks(mask_paths)
         except (OSError, ValueError, RuntimeError, TypeError) as exc:
             print(f"Could not restore previous navigation zone filters: {exc}", flush=True)
 
-    def is_no_stop_zone_at(self, pose: Optional[Dict[str, Any]] = None) -> bool:
+    def _navigation_goal_blocking_zone(self, pose: Optional[Dict[str, Any]] = None) -> Optional[str]:
         candidate = pose if isinstance(pose, dict) else self.pose
         try:
             x, y = float(candidate["x"]), float(candidate["y"])
         except (KeyError, TypeError, ValueError, OverflowError):
-            return False
+            return None
         if not math.isfinite(x) or not math.isfinite(y):
-            return False
+            return None
         with self._lock:
             zones = list(self._navigation_zones)
-        return any(
-            zone["zone_type"] == "NO_STOP"
-            and zone["min_x"] <= x <= zone["max_x"]
-            and zone["min_y"] <= y <= zone["max_y"]
-            for zone in zones
-        )
-
-    def is_keepout_zone_at(self, pose: Optional[Dict[str, Any]] = None) -> bool:
-        candidate = pose if isinstance(pose, dict) else self.pose
-        try:
-            x, y = float(candidate["x"]), float(candidate["y"])
-        except (KeyError, TypeError, ValueError, OverflowError):
-            return False
-        if not math.isfinite(x) or not math.isfinite(y):
-            return False
-        with self._lock:
-            zones = list(self._navigation_zones)
-        return any(
-            zone["zone_type"] == "KEEP_OUT"
-            and zone["min_x"] <= x <= zone["max_x"]
-            and zone["min_y"] <= y <= zone["max_y"]
-            for zone in zones
-        )
+        for zone in zones:
+            policy = self.ZONE_POLICIES.get(zone["zone_type"], {})
+            if (
+                policy.get("goal_rule") == "BLOCK"
+                and zone["min_x"] <= x <= zone["max_x"]
+                and zone["min_y"] <= y <= zone["max_y"]
+            ):
+                return zone["zone_type"]
+        return None
 
     @staticmethod
     def _pgm_dimensions(image_path: Path) -> tuple[int, int]:
@@ -1503,7 +1568,7 @@ class RobotRuntimeGateway:
         map_yaml_path: Path,
         zones: list[Dict[str, Any]],
         speed_multiplier_override: Optional[float] = None,
-    ) -> tuple[Path, Path, float]:
+    ) -> tuple[Dict[str, Path], float, Dict[str, int]]:
         try:
             import yaml
         except ImportError as exc:
@@ -1524,9 +1589,14 @@ class RobotRuntimeGateway:
         if not all(math.isfinite(value) for value in (origin_x, origin_y, origin_yaw)):
             raise ValueError("Saved map origin must contain finite coordinates.")
 
-        keepout_cells = bytearray(width * height)
-        speed_cells = bytearray(width * height)
-        speed_zones = [zone for zone in zones if zone["zone_type"] == "SPEED_LIMIT"]
+        layer_cells = {
+            layer: bytearray(width * height)
+            for layer in self.ZONE_MASK_LAYERS
+        }
+        speed_zones = [
+            zone for zone in zones
+            if self.ZONE_POLICIES[zone["zone_type"]].get("mask_value") == "SPEED_LIMIT"
+        ]
         max_zone_speed = max((zone["max_speed"] for zone in speed_zones), default=1.0)
         speed_multiplier = (
             float(speed_multiplier_override)
@@ -1538,8 +1608,21 @@ class RobotRuntimeGateway:
         cosine, sine = math.cos(origin_yaw), math.sin(origin_yaw)
 
         for zone in zones:
-            if zone["zone_type"] not in {"KEEP_OUT", "SPEED_LIMIT"}:
+            policy = self.ZONE_POLICIES[zone["zone_type"]]
+            layer = policy.get("mask_layer")
+            if layer is None:
                 continue
+            layer_config = self.ZONE_MASK_LAYERS.get(layer)
+            if layer_config is None:
+                raise ValueError(f"Navigation zone layer '{layer}' is not configured.")
+            cells = layer_cells[layer]
+            encoding = policy.get("mask_value")
+            if encoding == "LETHAL":
+                cell_value = 1
+            elif encoding == "SPEED_LIMIT":
+                cell_value = max(1, min(100, round(zone["max_speed"] / speed_multiplier)))
+            else:
+                raise ValueError(f"Navigation zone type '{zone['zone_type']}' has no supported mask encoding.")
             corners = (
                 (zone["min_x"], zone["min_y"]), (zone["min_x"], zone["max_y"]),
                 (zone["max_x"], zone["min_y"]), (zone["max_x"], zone["max_y"]),
@@ -1562,17 +1645,39 @@ class RobotRuntimeGateway:
                     world_y = origin_y + sine * local_x + cosine * local_y
                     if zone["min_x"] <= world_x <= zone["max_x"] and zone["min_y"] <= world_y <= zone["max_y"]:
                         offset = row * width + col
-                        if zone["zone_type"] == "KEEP_OUT":
-                            keepout_cells[offset] = 1
-                        else:
-                            value = max(1, min(100, round(zone["max_speed"] / speed_multiplier)))
-                            speed_cells[offset] = value if speed_cells[offset] == 0 else min(speed_cells[offset], value)
+                        self._merge_zone_mask_cell(cells, offset, cell_value, layer_config)
+
+        # Keep sub-cell zones represented by at least their center cell on the raster.
+        for zone in zones:
+            policy = self.ZONE_POLICIES[zone["zone_type"]]
+            layer = policy.get("mask_layer")
+            if layer is None:
+                continue
+            layer_config = self.ZONE_MASK_LAYERS[layer]
+            encoding = policy.get("mask_value")
+            if encoding == "LETHAL":
+                cell_value = 1
+            elif encoding == "SPEED_LIMIT":
+                cell_value = max(1, min(100, round(zone["max_speed"] / speed_multiplier)))
+            else:
+                continue
+            world_x = (zone["min_x"] + zone["max_x"]) / 2.0
+            world_y = (zone["min_y"] + zone["max_y"]) / 2.0
+            dx, dy = world_x - origin_x, world_y - origin_y
+            local_x = cosine * dx + sine * dy
+            local_y = -sine * dx + cosine * dy
+            col = int(math.floor(local_x / resolution))
+            grid_row = int(math.floor(local_y / resolution))
+            image_row = height - 1 - grid_row
+            if 0 <= col < width and 0 <= image_row < height:
+                offset = image_row * width + col
+                self._merge_zone_mask_cell(layer_cells[layer], offset, cell_value, layer_config)
 
         stem = re.sub(r"[^A-Za-z0-9_-]", "_", map_yaml_path.stem)
-        keepout_yaml = self.maps_dir / f"{stem}_keepout_mask.yaml"
-        speed_yaml = self.maps_dir / f"{stem}_speed_mask.yaml"
+        mask_paths: Dict[str, Path] = {}
+        mask_cell_counts_by_layer: Dict[str, int] = {}
 
-        def write_mask(yaml_path: Path, cells: bytearray, mode: str, keepout: bool) -> None:
+        def write_mask(yaml_path: Path, cells: bytearray, mode: str, encoding: str) -> None:
             pgm_path = yaml_path.with_suffix(".pgm")
             with pgm_path.open("w", encoding="ascii", newline="\n") as image:
                 image.write(f"P2\n{width} {height}\n255\n")
@@ -1580,7 +1685,12 @@ class RobotRuntimeGateway:
                     values = []
                     for col in range(width):
                         value = cells[row * width + col]
-                        values.append(("0" if value else "255") if keepout else str(round((100 - value) * 255 / 100)))
+                        if encoding == "LETHAL":
+                            values.append("0" if value else "255")
+                        elif encoding == "SPEED_LIMIT":
+                            values.append(str(round((100 - value) * 255 / 100)))
+                        else:
+                            raise ValueError(f"Unsupported navigation mask encoding '{encoding}'.")
                     image.write(" ".join(values) + "\n")
             yaml_path.write_text(
                 f"image: {pgm_path.name}\nresolution: {resolution:.12g}\n"
@@ -1589,19 +1699,31 @@ class RobotRuntimeGateway:
                 encoding="utf-8",
             )
 
-        write_mask(keepout_yaml, keepout_cells, "trinary", True)
-        write_mask(speed_yaml, speed_cells, "scale", False)
-        return keepout_yaml, speed_yaml, speed_multiplier
+        for layer, config in self.ZONE_MASK_LAYERS.items():
+            yaml_path = self.maps_dir / f"{stem}_{config['filename_suffix']}.yaml"
+            cells = layer_cells[layer]
+            write_mask(yaml_path, cells, config["mode"], config["encoding"])
+            mask_paths[layer] = yaml_path
+            mask_cell_counts_by_layer[layer] = sum(value != 0 for value in cells)
+        return mask_paths, speed_multiplier, mask_cell_counts_by_layer
+
+    @staticmethod
+    def _merge_zone_mask_cell(cells: bytearray, offset: int, value: int, config: Dict[str, Any]) -> None:
+        if config["encoding"] == "LETHAL":
+            cells[offset] = max(cells[offset], value)
+        elif config["encoding"] == "SPEED_LIMIT":
+            cells[offset] = value if cells[offset] == 0 else min(cells[offset], value)
+        else:
+            raise ValueError(f"Unsupported navigation mask encoding '{config['encoding']}'.")
 
     def _start_navigation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         target = payload.get("target") or {}
         values = self._pose_values(target)
         if values is None:
             return self._failure("Navigation target requires finite x, y and theta values.")
-        if self.is_keepout_zone_at({"x": values[0], "y": values[1]}):
-            return self._failure("Navigation target is inside a KEEP_OUT zone.")
-        if self.is_no_stop_zone_at({"x": values[0], "y": values[1]}):
-            return self._failure("Navigation target is inside a NO_STOP zone.")
+        blocking_zone = self._navigation_goal_blocking_zone({"x": values[0], "y": values[1]})
+        if blocking_zone is not None:
+            return self._failure(f"Navigation target is inside a {blocking_zone} zone.")
         if self._node is None or self._action_client is None:
             return self._failure(self.error or "ROS is unavailable.")
         command_id = str(payload.get("command_id") or "").strip()
