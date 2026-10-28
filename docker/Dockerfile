@@ -21,6 +21,7 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
     ros-jazzy-joint-state-publisher \
     python3-colcon-common-extensions \
     python3-serial \
+    python3-yaml \
     python3-tk \
     espeak-ng \
     alsa-utils \

@@ -141,6 +141,13 @@ local_costmap:
       plugins:
       - obstacle_layer
       - inflation_layer
+      filters:
+      - keepout_filter
+      keepout_filter:
+        plugin: nav2_costmap_2d::KeepoutFilter
+        enabled: true
+        filter_info_topic: /keepout_costmap_filter_info
+        override_lethal_cost: true
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 3.0
@@ -174,6 +181,18 @@ global_costmap:
       - static_layer
       - obstacle_layer
       - inflation_layer
+      filters:
+      - keepout_filter
+      - speed_filter
+      keepout_filter:
+        plugin: nav2_costmap_2d::KeepoutFilter
+        enabled: true
+        filter_info_topic: /keepout_costmap_filter_info
+        override_lethal_cost: true
+      speed_filter:
+        plugin: nav2_costmap_2d::SpeedFilter
+        enabled: true
+        filter_info_topic: /speed_costmap_filter_info
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
         enabled: true

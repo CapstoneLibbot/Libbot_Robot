@@ -27,6 +27,7 @@ class MoveStep(BaseStep):
         self.timeout_sec = self._extract_optional_int(self.config.get("timeout_sec"))
         self.path_id = self.config.get("path_id")
         self.navigation = NavigationController()
+        self.no_stop_zone_checker = self.config.get("_no_stop_zone_checker")
 
     def _normalize_enum(self, value: Any, default: str) -> str:
         if value is None:
@@ -212,6 +213,12 @@ class MoveStep(BaseStep):
             return self._error_payload(context, goal_error or "Invalid navigation goal.")
 
         requested_target = resolved_goal.get("target") or {"path_id": resolved_goal.get("path_id")}
+        if callable(self.no_stop_zone_checker) and isinstance(requested_target, dict):
+            try:
+                if self.no_stop_zone_checker(requested_target):
+                    return self._error_payload(context, "Navigation target is inside a NO_STOP zone.")
+            except (TypeError, ValueError):
+                pass
         goal = {
             "target": resolved_goal.get("target"),
             "path_id": resolved_goal.get("path_id"),

@@ -114,6 +114,7 @@ class RobotRuntimeGateway:
         self._mapping_process: Optional[subprocess.Popen[Any]] = None
         self._navigation_process: Optional[subprocess.Popen[Any]] = None
         self._navigation_map_path: Optional[str] = None
+        self._navigation_zones: list[Dict[str, Any]] = []
         self._active_map_id: Optional[str] = None
         self._pose_map_path: Optional[str] = None
         self.navigation_ready_state = False
@@ -296,6 +297,7 @@ class RobotRuntimeGateway:
                     resume_navigation = bool(payload.get("resume_navigation", False)) and self._resume_navigation_after_manual_stop
                     map_path = self._navigation_map_path
                     map_id = self._navigation_map_id
+                    zones = list(self._navigation_zones)
                     if resume_navigation and not hard_error:
                         self._resume_navigation_after_manual_stop = False
                     elif resume_navigation:
@@ -315,7 +317,7 @@ class RobotRuntimeGateway:
                 with self._lock:
                     self._resume_navigation_after_manual_stop = True
                 return self._failure("Nav2 cannot be restarted because no previously used map path is available.")
-            result = self._start_navigation_mode(map_path, map_id)
+            result = self._start_navigation_mode(map_path, map_id, zones)
             if result.get("status") != "accepted":
                 with self._lock:
                     self._resume_navigation_after_manual_stop = True
@@ -341,6 +343,7 @@ class RobotRuntimeGateway:
             return self._start_navigation_mode(
                 str(payload.get("map_path", "")),
                 str(payload.get("map_id", "")).strip() or None,
+                payload.get("zones") if isinstance(payload.get("zones"), list) else [],
             )
         if command == "stop_navigation_mode":
             self._terminate_process(self._navigation_process)
@@ -676,6 +679,7 @@ class RobotRuntimeGateway:
         self,
         map_path: str,
         map_id: Optional[str] = None,
+        zones: Optional[list[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         if self._mapping_process is not None and self._mapping_process.poll() is None:
             return self._failure("Stop SLAM mapping before starting Nav2.")
@@ -690,6 +694,11 @@ class RobotRuntimeGateway:
         if self._navigation_process is not None and self._navigation_process.poll() is None:
             return self._failure("Nav2 is already running.")
         try:
+            try:
+                normalized_zones = self._normalize_navigation_zones(zones or [])
+                keepout_mask, speed_mask, speed_multiplier = self._write_zone_masks(path, normalized_zones)
+            except (OSError, ValueError, RuntimeError, TypeError) as exc:
+                return self._failure(f"Could not prepare navigation zone filters: {exc}")
             with self._lock:
                 self._localization_attempt_id += 1
                 self._amcl_samples.clear()
@@ -704,6 +713,7 @@ class RobotRuntimeGateway:
                 self._navigation_lifecycle_paused = False
                 self._navigation_map_id = map_id or path.stem
                 self._active_map_id = self._navigation_map_id
+                self._navigation_zones = normalized_zones
                 self._pose_map_path = None
                 self._map = None
                 self._last_map_post = 0.0
@@ -717,6 +727,10 @@ class RobotRuntimeGateway:
                     "use_rviz:=false",
                     "autostart_navigation:=false",
                     f"use_sim_time:={'true' if self.use_sim_time else 'false'}",
+                    "zones_enabled:=true",
+                    f"keepout_mask:={keepout_mask}",
+                    f"speed_mask:={speed_mask}",
+                    f"speed_filter_multiplier:={speed_multiplier:.12g}",
                 ],
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
@@ -758,6 +772,26 @@ class RobotRuntimeGateway:
                     f"{self.NAV2_STARTUP_TIMEOUT_SEC:.0f} seconds; "
                     "the launch was stopped. Check the robot container logs."
                 )
+
+            filter_nodes = (
+                "keepout_filter_mask_server",
+                "keepout_costmap_filter_info_server",
+                "speed_filter_mask_server",
+                "speed_costmap_filter_info_server",
+            )
+            filters_ready = False
+            while time.monotonic() < startup_deadline and self._navigation_process.poll() is None:
+                filters_ready = all(self._lifecycle_state(name, 0.15) == 3 for name in filter_nodes)
+                if filters_ready:
+                    break
+                time.sleep(0.2)
+            if not filters_ready:
+                self._terminate_process(self._navigation_process)
+                self._navigation_process = None
+                with self._lock:
+                    self.navigation_mode_state = "ERROR"
+                    self.error = "NAV2_START_FAILED: navigation zone filter servers did not become active."
+                return self._failure("Nav2 zone filter servers did not become active before navigation startup timed out.")
 
             while time.monotonic() < startup_deadline:
                 with self._lock:
@@ -1246,11 +1280,168 @@ class RobotRuntimeGateway:
             ),
         }
 
+    def _normalize_navigation_zones(self, zones: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        normalized: list[Dict[str, Any]] = []
+        for index, zone in enumerate(zones):
+            if not isinstance(zone, dict):
+                raise ValueError(f"Navigation zone {index} must be an object.")
+            zone_type = str(zone.get("zone_type", "")).strip().upper()
+            if zone_type not in {"KEEP_OUT", "SPEED_LIMIT", "NO_STOP"}:
+                raise ValueError(f"Unsupported navigation zone type '{zone_type}'.")
+            bounds = {key: float(zone.get(key)) for key in ("min_x", "min_y", "max_x", "max_y")}
+            if not all(math.isfinite(value) for value in bounds.values()):
+                raise ValueError("Navigation zone bounds must be finite.")
+            if bounds["min_x"] >= bounds["max_x"] or bounds["min_y"] >= bounds["max_y"]:
+                raise ValueError("Navigation zone bounds must have positive width and height.")
+            max_speed = 0.0
+            if zone_type == "SPEED_LIMIT":
+                try:
+                    max_speed = float(zone.get("max_speed", 0.0) or 0.0)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError("Navigation zone speed must be numeric.") from exc
+                if not math.isfinite(max_speed) or max_speed <= 0.0:
+                    raise ValueError("SPEED_LIMIT requires max_speed greater than zero.")
+            normalized.append({"zone_type": zone_type, **bounds, "max_speed": max_speed})
+        return normalized
+
+    def is_no_stop_zone_at(self, pose: Optional[Dict[str, Any]] = None) -> bool:
+        candidate = pose if isinstance(pose, dict) else self.pose
+        try:
+            x, y = float(candidate["x"]), float(candidate["y"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False
+        if not math.isfinite(x) or not math.isfinite(y):
+            return False
+        with self._lock:
+            zones = list(self._navigation_zones)
+        return any(
+            zone["zone_type"] == "NO_STOP"
+            and zone["min_x"] <= x <= zone["max_x"]
+            and zone["min_y"] <= y <= zone["max_y"]
+            for zone in zones
+        )
+
+    @staticmethod
+    def _pgm_dimensions(image_path: Path) -> tuple[int, int]:
+        data = image_path.read_bytes()
+        index = 0
+
+        def token() -> bytes:
+            nonlocal index
+            while index < len(data):
+                if data[index] in b" \t\r\n\v\f":
+                    index += 1
+                elif data[index] == ord("#"):
+                    while index < len(data) and data[index] not in b"\r\n":
+                        index += 1
+                else:
+                    break
+            start = index
+            while index < len(data) and data[index] not in b" \t\r\n\v\f#":
+                index += 1
+            if start == index:
+                raise ValueError("The saved map image has an invalid PGM header.")
+            return data[start:index]
+
+        if token() not in (b"P2", b"P5"):
+            raise ValueError("Saved navigation maps must use a PGM image.")
+        width, height = int(token()), int(token())
+        max_value = int(token())
+        if width <= 0 or height <= 0 or max_value <= 0:
+            raise ValueError("The saved map PGM dimensions are invalid.")
+        return width, height
+
+    def _write_zone_masks(self, map_yaml_path: Path, zones: list[Dict[str, Any]]) -> tuple[Path, Path, float]:
+        try:
+            import yaml
+        except ImportError as exc:
+            raise RuntimeError("PyYAML is required to load saved map metadata for zone navigation.") from exc
+
+        metadata = yaml.safe_load(map_yaml_path.read_text(encoding="utf-8"))
+        if not isinstance(metadata, dict) or not isinstance(metadata.get("image"), str):
+            raise ValueError("Saved map YAML must define an image file.")
+        image_path = (map_yaml_path.parent / metadata["image"]).resolve()
+        if self.maps_dir not in image_path.parents or not image_path.is_file():
+            raise ValueError("The saved map image is not available in the robot maps directory.")
+        width, height = self._pgm_dimensions(image_path)
+        resolution = float(metadata.get("resolution", 0.0))
+        origin = metadata.get("origin")
+        if not math.isfinite(resolution) or resolution <= 0.0 or not isinstance(origin, list) or len(origin) < 3:
+            raise ValueError("Saved map YAML has invalid resolution or origin metadata.")
+        origin_x, origin_y, origin_yaw = (float(value) for value in origin[:3])
+        if not all(math.isfinite(value) for value in (origin_x, origin_y, origin_yaw)):
+            raise ValueError("Saved map origin must contain finite coordinates.")
+
+        keepout_cells = bytearray(width * height)
+        speed_cells = bytearray(width * height)
+        speed_zones = [zone for zone in zones if zone["zone_type"] == "SPEED_LIMIT"]
+        max_zone_speed = max((zone["max_speed"] for zone in speed_zones), default=1.0)
+        speed_multiplier = max_zone_speed / 100.0
+        cosine, sine = math.cos(origin_yaw), math.sin(origin_yaw)
+
+        for zone in zones:
+            if zone["zone_type"] not in {"KEEP_OUT", "SPEED_LIMIT"}:
+                continue
+            corners = (
+                (zone["min_x"], zone["min_y"]), (zone["min_x"], zone["max_y"]),
+                (zone["max_x"], zone["min_y"]), (zone["max_x"], zone["max_y"]),
+            )
+            local = []
+            for world_x, world_y in corners:
+                dx, dy = world_x - origin_x, world_y - origin_y
+                local.append((cosine * dx + sine * dy, -sine * dx + cosine * dy))
+            min_col = max(0, int(math.floor(min(point[0] for point in local) / resolution)))
+            max_col = min(width - 1, int(math.floor(max(point[0] for point in local) / resolution)))
+            min_row = max(0, height - 1 - int(math.floor(max(point[1] for point in local) / resolution)))
+            max_row = min(height - 1, height - 1 - int(math.floor(min(point[1] for point in local) / resolution)))
+            if max_col < min_col or max_row < min_row:
+                continue
+            for row in range(min_row, max_row + 1):
+                local_y = (height - row - 0.5) * resolution
+                for col in range(min_col, max_col + 1):
+                    local_x = (col + 0.5) * resolution
+                    world_x = origin_x + cosine * local_x - sine * local_y
+                    world_y = origin_y + sine * local_x + cosine * local_y
+                    if zone["min_x"] <= world_x <= zone["max_x"] and zone["min_y"] <= world_y <= zone["max_y"]:
+                        offset = row * width + col
+                        if zone["zone_type"] == "KEEP_OUT":
+                            keepout_cells[offset] = 1
+                        else:
+                            value = max(1, min(100, round(zone["max_speed"] / speed_multiplier)))
+                            speed_cells[offset] = value if speed_cells[offset] == 0 else min(speed_cells[offset], value)
+
+        stem = re.sub(r"[^A-Za-z0-9_-]", "_", map_yaml_path.stem)
+        keepout_yaml = self.maps_dir / f"{stem}_keepout_mask.yaml"
+        speed_yaml = self.maps_dir / f"{stem}_speed_mask.yaml"
+
+        def write_mask(yaml_path: Path, cells: bytearray, mode: str, keepout: bool) -> None:
+            pgm_path = yaml_path.with_suffix(".pgm")
+            with pgm_path.open("w", encoding="ascii", newline="\n") as image:
+                image.write(f"P2\n{width} {height}\n255\n")
+                for row in range(height):
+                    values = []
+                    for col in range(width):
+                        value = cells[row * width + col]
+                        values.append(("0" if value else "255") if keepout else str(round((100 - value) * 255 / 100)))
+                    image.write(" ".join(values) + "\n")
+            yaml_path.write_text(
+                f"image: {pgm_path.name}\nresolution: {resolution:.12g}\n"
+                f"origin: [{origin_x:.12g}, {origin_y:.12g}, {origin_yaw:.12g}]\n"
+                f"negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\nmode: {mode}\n",
+                encoding="utf-8",
+            )
+
+        write_mask(keepout_yaml, keepout_cells, "trinary", True)
+        write_mask(speed_yaml, speed_cells, "scale", False)
+        return keepout_yaml, speed_yaml, speed_multiplier
+
     def _start_navigation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         target = payload.get("target") or {}
         values = self._pose_values(target)
         if values is None:
             return self._failure("Navigation target requires finite x, y and theta values.")
+        if self.is_no_stop_zone_at({"x": values[0], "y": values[1]}):
+            return self._failure("Navigation target is inside a NO_STOP zone.")
         if self._node is None or self._action_client is None:
             return self._failure(self.error or "ROS is unavailable.")
         command_id = str(payload.get("command_id") or "").strip()
