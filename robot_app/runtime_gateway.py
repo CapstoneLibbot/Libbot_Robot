@@ -618,12 +618,24 @@ class RobotRuntimeGateway:
                 map_id = str(latest["id"])
                 saved = self._get_backend_json(f"{self.backend_url}/api/maps/{map_id}")
                 grid = self._grid_from_saved_map(saved)
+                zones_response = self._get_backend_json(
+                    f"{self.backend_url}/api/maps/{map_id}/zones"
+                )
+                zones = self._navigation_zones_from_backend(zones_response, map_id)
                 yaml_path, _ = self._write_grid_files(
                     grid, self.maps_dir / f"backend_{map_id.replace('-', '')}"
                 )
-                result = self._start_navigation_mode(str(yaml_path), map_id=map_id)
+                result = self._start_navigation_mode(
+                    str(yaml_path), map_id=map_id, zones=zones
+                )
                 if result.get("status") != "accepted":
                     raise RuntimeError(str(result.get("message") or "Could not start Nav2."))
+                print(
+                    "Auto-navigation loaded backend zones for map "
+                    f"{map_id}: zones={result.get('zone_counts_by_type', {})}, "
+                    f"mask_cells={result.get('mask_cell_counts_by_layer', {})}",
+                    flush=True,
+                )
                 self._navigation_bootstrap_complete = True
                 return
             except (
@@ -686,6 +698,37 @@ class RobotRuntimeGateway:
             "origin_yaw": float(origin[2]),
             "data": cells,
         }
+
+    @staticmethod
+    def _navigation_zones_from_backend(zones_response: Any, map_id: str) -> list[Dict[str, Any]]:
+        if not isinstance(zones_response, list):
+            raise ValueError("Backend map zones response is not a list.")
+
+        normalized: list[Dict[str, Any]] = []
+        for index, zone in enumerate(zones_response):
+            if not isinstance(zone, dict):
+                raise ValueError(f"Backend map zone {index} is not an object.")
+
+            zone_map_id = zone.get("mapId", zone.get("map_id"))
+            if str(zone_map_id or "").casefold() != map_id.casefold():
+                raise ValueError(f"Backend map zone {index} belongs to a different map.")
+
+            is_active = zone.get("isActive", zone.get("is_active"))
+            if not isinstance(is_active, bool):
+                raise ValueError(f"Backend map zone {index} is missing its active status.")
+            if not is_active:
+                continue
+
+            normalized.append({
+                "zone_type": zone.get("zoneType", zone.get("zone_type")),
+                "min_x": zone.get("minX", zone.get("min_x")),
+                "min_y": zone.get("minY", zone.get("min_y")),
+                "max_x": zone.get("maxX", zone.get("max_x")),
+                "max_y": zone.get("maxY", zone.get("max_y")),
+                "max_speed": zone.get("maxSpeed", zone.get("max_speed", 0.0)),
+            })
+
+        return normalized
 
     @staticmethod
     def _write_grid_files(grid: Dict[str, Any], output: Path) -> tuple[Path, Path]:
