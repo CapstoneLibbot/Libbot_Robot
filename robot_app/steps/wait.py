@@ -26,7 +26,7 @@ class WaitStep(BaseStep):
         self.poll_interval_sec = self._read_float("poll_interval_sec", 0.1)
         self.expected_value = self.config.get("expected_value")
         self.simulation_speed_provider = self.config.get("_simulation_speed_provider")
-        self.no_stop_zone_checker = self.config.get("_no_stop_zone_checker")
+        self.zone_action_checker = self.config.get("_zone_action_checker")
         self.ui_screen = self.config.get("ui_screen", "WAIT_FOR_TOUCH")
         self.prompt = self.config.get("prompt", "Choose an option to continue")
         self.ui = UIController(self.config.get("ui", {}), self.config.get("_event_callback"))
@@ -36,13 +36,14 @@ class WaitStep(BaseStep):
 
     def execute(self, context: RobotContext) -> Any:
         started_at = time.monotonic()
-        if callable(self.no_stop_zone_checker):
+        if callable(self.zone_action_checker):
             try:
-                if self.no_stop_zone_checker():
+                blocking_zone = self.zone_action_checker("WAIT")
+                if blocking_zone:
                     payload = {
                         "status": "error",
                         "type": "WAIT",
-                        "message": "WAIT/PAUSE is not allowed inside a NO_STOP zone.",
+                        "message": f"WAIT/PAUSE is not allowed inside a {blocking_zone} zone.",
                         "seconds": self.seconds,
                         "timeout_sec": self.timeout_sec,
                         "motion_stop_before": None,

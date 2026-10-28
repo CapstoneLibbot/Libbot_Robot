@@ -20,13 +20,17 @@ class RobotRuntimeGateway:
     """ROS-facing runtime adapter used by both Gazebo and the physical robot."""
 
     ZONE_POLICIES = {
-        "KEEP_OUT": {"mask_layer": "keepout", "goal_rule": "BLOCK", "mask_value": "LETHAL"},
+        "KEEP_OUT": {
+            "mask_layer": "keepout",
+            "mask_value": "LETHAL",
+            "blocked_actions": ("GOAL",),
+        },
         "SPEED_LIMIT": {
             "mask_layer": "speed",
             "requires_max_speed": True,
             "mask_value": "SPEED_LIMIT",
         },
-        "NO_STOP": {"goal_rule": "BLOCK"},
+        "NO_STOP": {"blocked_actions": ("GOAL", "WAIT")},
     }
     ZONE_MASK_LAYERS = {
         "keepout": {
@@ -1513,7 +1517,12 @@ class RobotRuntimeGateway:
         except (OSError, ValueError, RuntimeError, TypeError) as exc:
             print(f"Could not restore previous navigation zone filters: {exc}", flush=True)
 
-    def _navigation_goal_blocking_zone(self, pose: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    def navigation_zone_blocking_action(
+        self,
+        action: str,
+        pose: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        requested_action = str(action).strip().upper()
         candidate = pose if isinstance(pose, dict) else self.pose
         try:
             x, y = float(candidate["x"]), float(candidate["y"])
@@ -1526,7 +1535,7 @@ class RobotRuntimeGateway:
         for zone in zones:
             policy = self.ZONE_POLICIES.get(zone["zone_type"], {})
             if (
-                policy.get("goal_rule") == "BLOCK"
+                requested_action in policy.get("blocked_actions", ())
                 and zone["min_x"] <= x <= zone["max_x"]
                 and zone["min_y"] <= y <= zone["max_y"]
             ):
@@ -1721,7 +1730,7 @@ class RobotRuntimeGateway:
         values = self._pose_values(target)
         if values is None:
             return self._failure("Navigation target requires finite x, y and theta values.")
-        blocking_zone = self._navigation_goal_blocking_zone({"x": values[0], "y": values[1]})
+        blocking_zone = self.navigation_zone_blocking_action("GOAL", {"x": values[0], "y": values[1]})
         if blocking_zone is not None:
             return self._failure(f"Navigation target is inside a {blocking_zone} zone.")
         if self._node is None or self._action_client is None:
