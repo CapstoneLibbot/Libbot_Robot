@@ -74,6 +74,7 @@ class RobotRuntimeGateway:
         self._executor: Any = None
         self._action_client: Any = None
         self._goal_handle: Any = None
+        self._active_goal_request: Optional[Dict[str, Any]] = None
         self._goal_timeout_timer: Optional[threading.Timer] = None
         self._goal_submission_timer: Optional[threading.Timer] = None
         self._goal_timeout_generation = 0
@@ -115,6 +116,10 @@ class RobotRuntimeGateway:
         self._navigation_process: Optional[subprocess.Popen[Any]] = None
         self._navigation_map_path: Optional[str] = None
         self._navigation_zones: list[Dict[str, Any]] = []
+        self._navigation_speed_filter_multiplier = 0.01
+        self._load_map_service_type: Any = None
+        self._keepout_mask_load_client: Any = None
+        self._speed_mask_load_client: Any = None
         self._active_map_id: Optional[str] = None
         self._pose_map_path: Optional[str] = None
         self.navigation_ready_state = False
@@ -135,7 +140,7 @@ class RobotRuntimeGateway:
             import rclpy
             from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
             from nav2_msgs.action import NavigateToPose
-            from nav2_msgs.srv import ManageLifecycleNodes
+            from nav2_msgs.srv import LoadMap, ManageLifecycleNodes
             from nav_msgs.msg import OccupancyGrid, Odometry, Path
             from rclpy.action import ActionClient
             from rclpy.executors import MultiThreadedExecutor
@@ -145,7 +150,6 @@ class RobotRuntimeGateway:
             from sensor_msgs.msg import BatteryState
             from std_msgs.msg import String
             from std_srvs.srv import Empty
-            from nav2_msgs.srv import ManageLifecycleNodes
             from tf2_ros import Buffer, TransformListener
             from lifecycle_msgs.srv import GetState
         except ImportError as exc:
@@ -204,6 +208,13 @@ class RobotRuntimeGateway:
         )
         self._manage_lifecycle_type = ManageLifecycleNodes
         self._get_lifecycle_state_type = GetState
+        self._load_map_service_type = LoadMap
+        self._keepout_mask_load_client = self._node.create_client(
+            LoadMap, "/keepout_filter_mask_server/load_map"
+        )
+        self._speed_mask_load_client = self._node.create_client(
+            LoadMap, "/speed_filter_mask_server/load_map"
+        )
         self._executor = MultiThreadedExecutor(num_threads=2)
         self._executor.add_node(self._node)
         self._running = True
@@ -345,6 +356,8 @@ class RobotRuntimeGateway:
                 str(payload.get("map_id", "")).strip() or None,
                 payload.get("zones") if isinstance(payload.get("zones"), list) else [],
             )
+        if command == "update_navigation_zones":
+            return self._update_navigation_zones(payload)
         if command == "stop_navigation_mode":
             self._terminate_process(self._navigation_process)
             self._navigation_process = None
@@ -357,6 +370,7 @@ class RobotRuntimeGateway:
                 self.navigation_state = "IDLE"
                 self.active_goal_id = None
                 self._goal_handle = None
+                self._active_goal_request = None
                 self._pose_map_path = None
                 self._navigation_lifecycle_started = False
                 self._navigation_lifecycle_paused = False
@@ -714,6 +728,8 @@ class RobotRuntimeGateway:
                 self._navigation_map_id = map_id or path.stem
                 self._active_map_id = self._navigation_map_id
                 self._navigation_zones = normalized_zones
+                self._navigation_speed_filter_multiplier = speed_multiplier
+                self._active_goal_request = None
                 self._pose_map_path = None
                 self._map = None
                 self._last_map_post = 0.0
@@ -1304,6 +1320,120 @@ class RobotRuntimeGateway:
             normalized.append({"zone_type": zone_type, **bounds, "max_speed": max_speed})
         return normalized
 
+    def _update_navigation_zones(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        map_id = str(payload.get("map_id", "")).strip()
+        zones = payload.get("zones")
+        with self._lock:
+            map_path = self._navigation_map_path
+            active_map_id = self._navigation_map_id
+            previous_zones = list(self._navigation_zones)
+            previous_multiplier = self._navigation_speed_filter_multiplier
+
+        if not map_path or self._navigation_process is None or self._navigation_process.poll() is not None:
+            return self._failure("Nav2 is not running, so navigation zones cannot be updated.")
+        if not map_id or map_id.casefold() != str(active_map_id or "").casefold():
+            return self._failure("The requested map is not the map currently loaded in Nav2.")
+        if not isinstance(zones, list):
+            return self._failure("Navigation zones must be provided as a list.")
+
+        try:
+            normalized_zones = self._normalize_navigation_zones(zones)
+            keepout_mask, speed_mask, _ = self._write_zone_masks(
+                Path(map_path), normalized_zones, previous_multiplier
+            )
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            return self._failure(f"Could not prepare navigation zone filters: {exc}")
+
+        keepout_result = self._load_mask_map(self._keepout_mask_load_client, keepout_mask)
+        if keepout_result is not None:
+            return self._failure(keepout_result)
+
+        speed_result = self._load_mask_map(self._speed_mask_load_client, speed_mask)
+        if speed_result is not None:
+            self._restore_navigation_zone_filters(previous_zones, previous_multiplier, map_path)
+            return self._failure(speed_result)
+
+        with self._lock:
+            self._navigation_zones = normalized_zones
+        replan_result = self._replan_active_navigation_goal()
+        return {
+            "status": "accepted",
+            "map_id": map_id,
+            "zone_count": len(normalized_zones),
+            "navigation_replanned": replan_result is True,
+        }
+
+    def _replan_active_navigation_goal(self) -> Optional[bool]:
+        with self._lock:
+            if self.navigation_state not in {"SENDING", "NAVIGATING"}:
+                return None
+            goal_request = dict(self._active_goal_request or {})
+            if not goal_request:
+                return False
+            previous_goal_handle = self._goal_handle
+            self._goal_timeout_generation += 1
+            self._navigation_timeout_clear_locked()
+            self._goal_submission_timeout_clear_locked()
+            self.active_goal_id = None
+            self._goal_handle = None
+            self._active_goal_request = None
+            self.navigation_state = "IDLE"
+
+        self._publish_stop()
+        if previous_goal_handle is not None:
+            try:
+                cancel_future = previous_goal_handle.cancel_goal_async()
+                deadline = time.monotonic() + 3.0
+                while not cancel_future.done() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+            except Exception as exc:
+                print(f"Could not cancel the previous goal before replanning: {exc}", flush=True)
+
+        response = self._start_navigation(goal_request)
+        if response.get("status") != "accepted":
+            with self._lock:
+                self.navigation_state = "FAILED"
+                self.error = str(response.get("message") or "The active goal could not be replanned after zone changes.")
+            return False
+        return True
+
+    def _load_mask_map(self, client: Any, path: Path) -> Optional[str]:
+        if client is None or self._load_map_service_type is None:
+            return "Nav2 navigation zone map services are unavailable."
+        if not client.wait_for_service(timeout_sec=5.0):
+            return "Nav2 navigation zone map service did not become available."
+        request_message = self._load_map_service_type.Request()
+        request_message.map_url = str(path)
+        future = client.call_async(request_message)
+        deadline = time.monotonic() + 10.0
+        while not future.done() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if not future.done():
+            return "Nav2 timed out while loading a navigation zone map."
+        try:
+            response = future.result()
+        except Exception as exc:
+            return f"Nav2 failed to load a navigation zone map: {exc}"
+        if response is None or int(response.result) != 0:
+            result_code = "unknown" if response is None else str(response.result)
+            return f"Nav2 rejected a navigation zone map (result {result_code})."
+        return None
+
+    def _restore_navigation_zone_filters(
+        self,
+        zones: list[Dict[str, Any]],
+        multiplier: float,
+        map_path: str,
+    ) -> None:
+        try:
+            keepout_mask, speed_mask, _ = self._write_zone_masks(
+                Path(map_path), zones, multiplier
+            )
+            self._load_mask_map(self._keepout_mask_load_client, keepout_mask)
+            self._load_mask_map(self._speed_mask_load_client, speed_mask)
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            print(f"Could not restore previous navigation zone filters: {exc}", flush=True)
+
     def is_no_stop_zone_at(self, pose: Optional[Dict[str, Any]] = None) -> bool:
         candidate = pose if isinstance(pose, dict) else self.pose
         try:
@@ -1316,6 +1446,23 @@ class RobotRuntimeGateway:
             zones = list(self._navigation_zones)
         return any(
             zone["zone_type"] == "NO_STOP"
+            and zone["min_x"] <= x <= zone["max_x"]
+            and zone["min_y"] <= y <= zone["max_y"]
+            for zone in zones
+        )
+
+    def is_keepout_zone_at(self, pose: Optional[Dict[str, Any]] = None) -> bool:
+        candidate = pose if isinstance(pose, dict) else self.pose
+        try:
+            x, y = float(candidate["x"]), float(candidate["y"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return False
+        if not math.isfinite(x) or not math.isfinite(y):
+            return False
+        with self._lock:
+            zones = list(self._navigation_zones)
+        return any(
+            zone["zone_type"] == "KEEP_OUT"
             and zone["min_x"] <= x <= zone["max_x"]
             and zone["min_y"] <= y <= zone["max_y"]
             for zone in zones
@@ -1351,7 +1498,12 @@ class RobotRuntimeGateway:
             raise ValueError("The saved map PGM dimensions are invalid.")
         return width, height
 
-    def _write_zone_masks(self, map_yaml_path: Path, zones: list[Dict[str, Any]]) -> tuple[Path, Path, float]:
+    def _write_zone_masks(
+        self,
+        map_yaml_path: Path,
+        zones: list[Dict[str, Any]],
+        speed_multiplier_override: Optional[float] = None,
+    ) -> tuple[Path, Path, float]:
         try:
             import yaml
         except ImportError as exc:
@@ -1376,7 +1528,13 @@ class RobotRuntimeGateway:
         speed_cells = bytearray(width * height)
         speed_zones = [zone for zone in zones if zone["zone_type"] == "SPEED_LIMIT"]
         max_zone_speed = max((zone["max_speed"] for zone in speed_zones), default=1.0)
-        speed_multiplier = max_zone_speed / 100.0
+        speed_multiplier = (
+            float(speed_multiplier_override)
+            if speed_multiplier_override is not None
+            else max_zone_speed / 100.0
+        )
+        if not math.isfinite(speed_multiplier) or speed_multiplier <= 0.0:
+            raise ValueError("Speed filter multiplier must be a positive finite value.")
         cosine, sine = math.cos(origin_yaw), math.sin(origin_yaw)
 
         for zone in zones:
@@ -1440,6 +1598,8 @@ class RobotRuntimeGateway:
         values = self._pose_values(target)
         if values is None:
             return self._failure("Navigation target requires finite x, y and theta values.")
+        if self.is_keepout_zone_at({"x": values[0], "y": values[1]}):
+            return self._failure("Navigation target is inside a KEEP_OUT zone.")
         if self.is_no_stop_zone_at({"x": values[0], "y": values[1]}):
             return self._failure("Navigation target is inside a NO_STOP zone.")
         if self._node is None or self._action_client is None:
@@ -1464,6 +1624,7 @@ class RobotRuntimeGateway:
             self._goal_timeout_generation += 1
             generation = self._goal_timeout_generation
             self.active_goal_id = command_id
+            self._active_goal_request = dict(payload)
             self.navigation_state = "SENDING"
             self.error = None
             self._goal_timeout_sec = timeout_sec
@@ -1543,6 +1704,7 @@ class RobotRuntimeGateway:
                     self.error = "GOAL_REJECTED"
                     self._goal_handle = None
                     self.active_goal_id = None
+                    self._active_goal_request = None
                 return
             with self._lock:
                 if self.active_goal_id != command_id or self._goal_timeout_generation != generation:
@@ -1572,6 +1734,7 @@ class RobotRuntimeGateway:
                     self.error = str(exc)
                     self._goal_handle = None
                     self.active_goal_id = None
+                    self._active_goal_request = None
 
     def _on_navigation_result(self, future: Any, command_id: str, generation: int) -> None:
         try:
@@ -1603,6 +1766,7 @@ class RobotRuntimeGateway:
             self.error = result_error
             if state in {"SUCCEEDED", "CANCELED", "FAILED"}:
                 self.active_goal_id = None
+                self._active_goal_request = None
 
     def _on_goal_timeout(self, command_id: Optional[str], generation: int) -> None:
         with self._lock:
@@ -1617,6 +1781,7 @@ class RobotRuntimeGateway:
             self.error = "NO_PROGRESS_TIMEOUT"
             self.active_goal_id = None
             self._goal_handle = None
+            self._active_goal_request = None
             self._goal_timeout_generation += 1
             self._navigation_timeout_clear_locked()
         if goal_handle is not None:
@@ -1638,6 +1803,7 @@ class RobotRuntimeGateway:
             self.error = "GOAL_SUBMISSION_TIMEOUT"
             self.active_goal_id = None
             self._goal_handle = None
+            self._active_goal_request = None
             self._goal_timeout_generation += 1
             self._navigation_timeout_clear_locked()
         self._publish_stop()
