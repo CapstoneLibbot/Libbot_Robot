@@ -21,6 +21,7 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
     ros-jazzy-joint-state-publisher \
     python3-colcon-common-extensions \
     python3-serial \
+    python3-yaml \
     python3-tk \
     espeak-ng \
     alsa-utils \
@@ -37,6 +38,7 @@ RUN mkdir -p /ros2_ws/logs
 
 COPY ros2_ws/src /ros2_ws/src
 COPY robot_app /ros2_ws/robot_app
+COPY code /ros2_ws/code
 
 RUN . /opt/ros/jazzy/setup.bash && \
     cd /ros2_ws && \

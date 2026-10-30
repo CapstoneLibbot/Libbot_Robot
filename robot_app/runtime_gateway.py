@@ -19,6 +19,36 @@ from urllib.error import HTTPError, URLError
 class RobotRuntimeGateway:
     """ROS-facing runtime adapter used by both Gazebo and the physical robot."""
 
+    ZONE_POLICIES = {
+        "KEEP_OUT": {
+            "mask_layer": "keepout",
+            "mask_value": "LETHAL",
+            "blocked_actions": ("GOAL",),
+        },
+        "SPEED_LIMIT": {
+            "mask_layer": "speed",
+            "requires_max_speed": True,
+            "mask_value": "SPEED_LIMIT",
+        },
+        "NO_STOP": {"blocked_actions": ("GOAL", "WAIT")},
+    }
+    ZONE_MASK_LAYERS = {
+        "keepout": {
+            "filename_suffix": "keepout_mask",
+            "mode": "trinary",
+            "launch_argument": "keepout_mask",
+            "load_client": "_keepout_mask_load_client",
+            "encoding": "LETHAL",
+        },
+        "speed": {
+            "filename_suffix": "speed_mask",
+            "mode": "scale",
+            "launch_argument": "speed_mask",
+            "load_client": "_speed_mask_load_client",
+            "encoding": "SPEED_LIMIT",
+        },
+    }
+
     BATTERY_TIMEOUT_SEC = 3.0
     STM32_ACK_TIMEOUT_SEC = 0.15
     STM32_ERROR_STATUS_PREFIXES = ("UART_TX_ERROR,", "MCU_ERROR,")
@@ -34,6 +64,7 @@ class RobotRuntimeGateway:
     AMCL_MAX_SAMPLE_YAW_SPREAD_RAD = 0.15
     NAVIGATION_PROGRESS_DISTANCE_M = 0.05
     NAV2_ACTIVATION_TIMEOUT_SEC = 30.0
+    NAV_GOAL_SUBMISSION_TIMEOUT_SEC = 10.0
     NAVIGATION_NODES = (
         "controller_server",
         "smoother_server",
@@ -73,7 +104,9 @@ class RobotRuntimeGateway:
         self._executor: Any = None
         self._action_client: Any = None
         self._goal_handle: Any = None
+        self._active_goal_request: Optional[Dict[str, Any]] = None
         self._goal_timeout_timer: Optional[threading.Timer] = None
+        self._goal_submission_timer: Optional[threading.Timer] = None
         self._goal_timeout_generation = 0
         self._goal_timeout_sec = 180.0
         self._goal_best_distance_remaining: Optional[float] = None
@@ -112,6 +145,11 @@ class RobotRuntimeGateway:
         self._mapping_process: Optional[subprocess.Popen[Any]] = None
         self._navigation_process: Optional[subprocess.Popen[Any]] = None
         self._navigation_map_path: Optional[str] = None
+        self._navigation_zones: list[Dict[str, Any]] = []
+        self._navigation_speed_filter_multiplier = 0.01
+        self._load_map_service_type: Any = None
+        self._keepout_mask_load_client: Any = None
+        self._speed_mask_load_client: Any = None
         self._active_map_id: Optional[str] = None
         self._pose_map_path: Optional[str] = None
         self.navigation_ready_state = False
@@ -132,7 +170,7 @@ class RobotRuntimeGateway:
             import rclpy
             from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
             from nav2_msgs.action import NavigateToPose
-            from nav2_msgs.srv import ManageLifecycleNodes
+            from nav2_msgs.srv import LoadMap, ManageLifecycleNodes
             from nav_msgs.msg import OccupancyGrid, Odometry, Path
             from rclpy.action import ActionClient
             from rclpy.executors import MultiThreadedExecutor
@@ -142,7 +180,6 @@ class RobotRuntimeGateway:
             from sensor_msgs.msg import BatteryState
             from std_msgs.msg import String
             from std_srvs.srv import Empty
-            from nav2_msgs.srv import ManageLifecycleNodes
             from tf2_ros import Buffer, TransformListener
             from lifecycle_msgs.srv import GetState
         except ImportError as exc:
@@ -201,6 +238,13 @@ class RobotRuntimeGateway:
         )
         self._manage_lifecycle_type = ManageLifecycleNodes
         self._get_lifecycle_state_type = GetState
+        self._load_map_service_type = LoadMap
+        self._keepout_mask_load_client = self._node.create_client(
+            LoadMap, "/keepout_filter_mask_server/load_map"
+        )
+        self._speed_mask_load_client = self._node.create_client(
+            LoadMap, "/speed_filter_mask_server/load_map"
+        )
         self._executor = MultiThreadedExecutor(num_threads=2)
         self._executor.add_node(self._node)
         self._running = True
@@ -212,6 +256,8 @@ class RobotRuntimeGateway:
 
     def stop(self) -> None:
         self._running = False
+        with self._lock:
+            self._navigation_timeout_clear_locked()
         self._publish_stop()
         self._terminate_process(self._mapping_process)
         self._terminate_process(self._navigation_process)
@@ -292,6 +338,7 @@ class RobotRuntimeGateway:
                     resume_navigation = bool(payload.get("resume_navigation", False)) and self._resume_navigation_after_manual_stop
                     map_path = self._navigation_map_path
                     map_id = self._navigation_map_id
+                    zones = list(self._navigation_zones)
                     if resume_navigation and not hard_error:
                         self._resume_navigation_after_manual_stop = False
                     elif resume_navigation:
@@ -311,7 +358,7 @@ class RobotRuntimeGateway:
                 with self._lock:
                     self._resume_navigation_after_manual_stop = True
                 return self._failure("Nav2 cannot be restarted because no previously used map path is available.")
-            result = self._start_navigation_mode(map_path, map_id)
+            result = self._start_navigation_mode(map_path, map_id, zones)
             if result.get("status") != "accepted":
                 with self._lock:
                     self._resume_navigation_after_manual_stop = True
@@ -337,7 +384,10 @@ class RobotRuntimeGateway:
             return self._start_navigation_mode(
                 str(payload.get("map_path", "")),
                 str(payload.get("map_id", "")).strip() or None,
+                payload.get("zones") if isinstance(payload.get("zones"), list) else [],
             )
+        if command == "update_navigation_zones":
+            return self._update_navigation_zones(payload)
         if command == "stop_navigation_mode":
             self._terminate_process(self._navigation_process)
             self._navigation_process = None
@@ -350,6 +400,7 @@ class RobotRuntimeGateway:
                 self.navigation_state = "IDLE"
                 self.active_goal_id = None
                 self._goal_handle = None
+                self._active_goal_request = None
                 self._pose_map_path = None
                 self._navigation_lifecycle_started = False
                 self._navigation_lifecycle_paused = False
@@ -567,12 +618,24 @@ class RobotRuntimeGateway:
                 map_id = str(latest["id"])
                 saved = self._get_backend_json(f"{self.backend_url}/api/maps/{map_id}")
                 grid = self._grid_from_saved_map(saved)
+                zones_response = self._get_backend_json(
+                    f"{self.backend_url}/api/maps/{map_id}/zones"
+                )
+                zones = self._navigation_zones_from_backend(zones_response, map_id)
                 yaml_path, _ = self._write_grid_files(
                     grid, self.maps_dir / f"backend_{map_id.replace('-', '')}"
                 )
-                result = self._start_navigation_mode(str(yaml_path), map_id=map_id)
+                result = self._start_navigation_mode(
+                    str(yaml_path), map_id=map_id, zones=zones
+                )
                 if result.get("status") != "accepted":
                     raise RuntimeError(str(result.get("message") or "Could not start Nav2."))
+                print(
+                    "Auto-navigation loaded backend zones for map "
+                    f"{map_id}: zones={result.get('zone_counts_by_type', {})}, "
+                    f"mask_cells={result.get('mask_cell_counts_by_layer', {})}",
+                    flush=True,
+                )
                 self._navigation_bootstrap_complete = True
                 return
             except (
@@ -637,6 +700,37 @@ class RobotRuntimeGateway:
         }
 
     @staticmethod
+    def _navigation_zones_from_backend(zones_response: Any, map_id: str) -> list[Dict[str, Any]]:
+        if not isinstance(zones_response, list):
+            raise ValueError("Backend map zones response is not a list.")
+
+        normalized: list[Dict[str, Any]] = []
+        for index, zone in enumerate(zones_response):
+            if not isinstance(zone, dict):
+                raise ValueError(f"Backend map zone {index} is not an object.")
+
+            zone_map_id = zone.get("mapId", zone.get("map_id"))
+            if str(zone_map_id or "").casefold() != map_id.casefold():
+                raise ValueError(f"Backend map zone {index} belongs to a different map.")
+
+            is_active = zone.get("isActive", zone.get("is_active"))
+            if not isinstance(is_active, bool):
+                raise ValueError(f"Backend map zone {index} is missing its active status.")
+            if not is_active:
+                continue
+
+            normalized.append({
+                "zone_type": zone.get("zoneType", zone.get("zone_type")),
+                "min_x": zone.get("minX", zone.get("min_x")),
+                "min_y": zone.get("minY", zone.get("min_y")),
+                "max_x": zone.get("maxX", zone.get("max_x")),
+                "max_y": zone.get("maxY", zone.get("max_y")),
+                "max_speed": zone.get("maxSpeed", zone.get("max_speed", 0.0)),
+            })
+
+        return normalized
+
+    @staticmethod
     def _write_grid_files(grid: Dict[str, Any], output: Path) -> tuple[Path, Path]:
         width = int(grid["width"])
         height = int(grid["height"])
@@ -672,6 +766,7 @@ class RobotRuntimeGateway:
         self,
         map_path: str,
         map_id: Optional[str] = None,
+        zones: Optional[list[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         if self._mapping_process is not None and self._mapping_process.poll() is None:
             return self._failure("Stop SLAM mapping before starting Nav2.")
@@ -686,6 +781,25 @@ class RobotRuntimeGateway:
         if self._navigation_process is not None and self._navigation_process.poll() is None:
             return self._failure("Nav2 is already running.")
         try:
+            try:
+                normalized_zones = self._normalize_navigation_zones(zones or [])
+                mask_paths, speed_multiplier, mask_cell_counts_by_layer = self._write_zone_masks(
+                    path, normalized_zones
+                )
+            except (OSError, ValueError, RuntimeError, TypeError) as exc:
+                return self._failure(f"Could not prepare navigation zone filters: {exc}")
+            zone_counts_by_type = self._zone_counts_by_type(normalized_zones)
+            required_mask_layers = self._required_zone_mask_layers(normalized_zones)
+            empty_mask_layers = [
+                layer for layer in required_mask_layers
+                if mask_cell_counts_by_layer.get(layer, 0) == 0
+            ]
+            if empty_mask_layers:
+                return self._failure(
+                    "The selected map produced empty cells for required zone mask layer(s): "
+                    + ", ".join(sorted(empty_mask_layers))
+                    + ". Check that the zones overlap the selected map."
+                )
             with self._lock:
                 self._localization_attempt_id += 1
                 self._amcl_samples.clear()
@@ -700,6 +814,9 @@ class RobotRuntimeGateway:
                 self._navigation_lifecycle_paused = False
                 self._navigation_map_id = map_id or path.stem
                 self._active_map_id = self._navigation_map_id
+                self._navigation_zones = normalized_zones
+                self._navigation_speed_filter_multiplier = speed_multiplier
+                self._active_goal_request = None
                 self._pose_map_path = None
                 self._map = None
                 self._last_map_post = 0.0
@@ -711,8 +828,14 @@ class RobotRuntimeGateway:
                     "use_hardware:=false",
                     "start_workflow_app:=false",
                     "use_rviz:=false",
-                    f"autostart_navigation:={'true' if self.use_sim_time else 'false'}",
+                    "autostart_navigation:=false",
                     f"use_sim_time:={'true' if self.use_sim_time else 'false'}",
+                    "zones_enabled:=true",
+                    *[
+                        f"{config['launch_argument']}:={mask_paths[layer]}"
+                        for layer, config in self.ZONE_MASK_LAYERS.items()
+                    ],
+                    f"speed_filter_multiplier:={speed_multiplier:.12g}",
                 ],
                 stdin=subprocess.DEVNULL,
                 start_new_session=True,
@@ -754,6 +877,26 @@ class RobotRuntimeGateway:
                     f"{self.NAV2_STARTUP_TIMEOUT_SEC:.0f} seconds; "
                     "the launch was stopped. Check the robot container logs."
                 )
+
+            filter_nodes = (
+                "keepout_filter_mask_server",
+                "keepout_costmap_filter_info_server",
+                "speed_filter_mask_server",
+                "speed_costmap_filter_info_server",
+            )
+            filters_ready = False
+            while time.monotonic() < startup_deadline and self._navigation_process.poll() is None:
+                filters_ready = all(self._lifecycle_state(name, 0.15) == 3 for name in filter_nodes)
+                if filters_ready:
+                    break
+                time.sleep(0.2)
+            if not filters_ready:
+                self._terminate_process(self._navigation_process)
+                self._navigation_process = None
+                with self._lock:
+                    self.navigation_mode_state = "ERROR"
+                    self.error = "NAV2_START_FAILED: navigation zone filter servers did not become active."
+                return self._failure("Nav2 zone filter servers did not become active before navigation startup timed out.")
 
             while time.monotonic() < startup_deadline:
                 with self._lock:
@@ -817,6 +960,9 @@ class RobotRuntimeGateway:
                 "status": "accepted",
                 "navigation_mode_state": self.navigation_mode_state,
                 "active_map_id": self._active_map_id,
+                "zone_count": len(normalized_zones),
+                "zone_counts_by_type": zone_counts_by_type,
+                "mask_cell_counts_by_layer": mask_cell_counts_by_layer,
             }
         except OSError as exc:
             with self._lock:
@@ -1242,11 +1388,394 @@ class RobotRuntimeGateway:
             ),
         }
 
+    def _normalize_navigation_zones(self, zones: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+        normalized: list[Dict[str, Any]] = []
+        for index, zone in enumerate(zones):
+            if not isinstance(zone, dict):
+                raise ValueError(f"Navigation zone {index} must be an object.")
+            zone_type = str(zone.get("zone_type", "")).strip().upper()
+            policy = self.ZONE_POLICIES.get(zone_type)
+            if policy is None:
+                raise ValueError(f"Unsupported navigation zone type '{zone_type}'.")
+            bounds = {key: float(zone.get(key)) for key in ("min_x", "min_y", "max_x", "max_y")}
+            if not all(math.isfinite(value) for value in bounds.values()):
+                raise ValueError("Navigation zone bounds must be finite.")
+            if bounds["min_x"] >= bounds["max_x"] or bounds["min_y"] >= bounds["max_y"]:
+                raise ValueError("Navigation zone bounds must have positive width and height.")
+            max_speed = 0.0
+            if policy.get("requires_max_speed"):
+                try:
+                    max_speed = float(zone.get("max_speed", 0.0) or 0.0)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError("Navigation zone speed must be numeric.") from exc
+                if not math.isfinite(max_speed) or max_speed <= 0.0:
+                    raise ValueError("SPEED_LIMIT requires max_speed greater than zero.")
+            normalized.append({"zone_type": zone_type, **bounds, "max_speed": max_speed})
+        return normalized
+
+    @staticmethod
+    def _zone_counts_by_type(zones: list[Dict[str, Any]]) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for zone in zones:
+            zone_type = zone["zone_type"]
+            counts[zone_type] = counts.get(zone_type, 0) + 1
+        return counts
+
+    @classmethod
+    def _required_zone_mask_layers(cls, zones: list[Dict[str, Any]]) -> set[str]:
+        return {
+            policy["mask_layer"]
+            for zone in zones
+            if (policy := cls.ZONE_POLICIES.get(zone["zone_type"])) is not None
+            and policy.get("mask_layer")
+        }
+
+    def _update_navigation_zones(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        map_id = str(payload.get("map_id", "")).strip()
+        zones = payload.get("zones")
+        with self._lock:
+            map_path = self._navigation_map_path
+            active_map_id = self._navigation_map_id
+            previous_zones = list(self._navigation_zones)
+            previous_multiplier = self._navigation_speed_filter_multiplier
+
+        if not map_path or self._navigation_process is None or self._navigation_process.poll() is not None:
+            return self._failure("Nav2 is not running, so navigation zones cannot be updated.")
+        if not map_id or map_id.casefold() != str(active_map_id or "").casefold():
+            return self._failure("The requested map is not the map currently loaded in Nav2.")
+        if not isinstance(zones, list):
+            return self._failure("Navigation zones must be provided as a list.")
+
+        try:
+            normalized_zones = self._normalize_navigation_zones(zones)
+            mask_paths, _, mask_cell_counts_by_layer = self._write_zone_masks(
+                Path(map_path), normalized_zones, previous_multiplier
+            )
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            return self._failure(f"Could not prepare navigation zone filters: {exc}")
+        required_mask_layers = self._required_zone_mask_layers(normalized_zones)
+        empty_mask_layers = [
+            layer for layer in required_mask_layers
+            if mask_cell_counts_by_layer.get(layer, 0) == 0
+        ]
+        if empty_mask_layers:
+            return self._failure(
+                "The selected map produced empty cells for required zone mask layer(s): "
+                + ", ".join(sorted(empty_mask_layers))
+                + ". Check that the zones overlap the selected map."
+            )
+
+        mask_result = self._load_navigation_zone_masks(mask_paths)
+        if mask_result is not None:
+            self._restore_navigation_zone_filters(previous_zones, previous_multiplier, map_path)
+            return self._failure(mask_result)
+
+        with self._lock:
+            self._navigation_zones = normalized_zones
+        replan_result = self._replan_active_navigation_goal()
+        return {
+            "status": "accepted",
+            "map_id": map_id,
+            "zone_count": len(normalized_zones),
+            "zone_counts_by_type": self._zone_counts_by_type(normalized_zones),
+            "mask_cell_counts_by_layer": mask_cell_counts_by_layer,
+            "navigation_replanned": replan_result is True,
+        }
+
+    def _replan_active_navigation_goal(self) -> Optional[bool]:
+        with self._lock:
+            if self.navigation_state not in {"SENDING", "NAVIGATING"}:
+                return None
+            goal_request = dict(self._active_goal_request or {})
+            if not goal_request:
+                return False
+            previous_goal_handle = self._goal_handle
+            self._goal_timeout_generation += 1
+            self._navigation_timeout_clear_locked()
+            self._goal_submission_timeout_clear_locked()
+            self.active_goal_id = None
+            self._goal_handle = None
+            self._active_goal_request = None
+            self.navigation_state = "IDLE"
+
+        self._publish_stop()
+        if previous_goal_handle is not None:
+            try:
+                cancel_future = previous_goal_handle.cancel_goal_async()
+                deadline = time.monotonic() + 3.0
+                while not cancel_future.done() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+            except Exception as exc:
+                print(f"Could not cancel the previous goal before replanning: {exc}", flush=True)
+
+        response = self._start_navigation(goal_request)
+        if response.get("status") != "accepted":
+            with self._lock:
+                self.navigation_state = "FAILED"
+                self.error = str(response.get("message") or "The active goal could not be replanned after zone changes.")
+            return False
+        return True
+
+    def _load_mask_map(self, client: Any, path: Path) -> Optional[str]:
+        if client is None or self._load_map_service_type is None:
+            return "Nav2 navigation zone map services are unavailable."
+        if not client.wait_for_service(timeout_sec=5.0):
+            return "Nav2 navigation zone map service did not become available."
+        request_message = self._load_map_service_type.Request()
+        request_message.map_url = str(path)
+        future = client.call_async(request_message)
+        deadline = time.monotonic() + 10.0
+        while not future.done() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if not future.done():
+            return "Nav2 timed out while loading a navigation zone map."
+        try:
+            response = future.result()
+        except Exception as exc:
+            return f"Nav2 failed to load a navigation zone map: {exc}"
+        if response is None or int(response.result) != 0:
+            result_code = "unknown" if response is None else str(response.result)
+            return f"Nav2 rejected a navigation zone map (result {result_code})."
+        return None
+
+    def _load_navigation_zone_masks(self, mask_paths: Dict[str, Path]) -> Optional[str]:
+        for layer, config in self.ZONE_MASK_LAYERS.items():
+            client = getattr(self, config["load_client"])
+            result = self._load_mask_map(client, mask_paths[layer])
+            if result is not None:
+                return result
+        return None
+
+    def _restore_navigation_zone_filters(
+        self,
+        zones: list[Dict[str, Any]],
+        multiplier: float,
+        map_path: str,
+    ) -> None:
+        try:
+            mask_paths, _, _ = self._write_zone_masks(
+                Path(map_path), zones, multiplier
+            )
+            self._load_navigation_zone_masks(mask_paths)
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            print(f"Could not restore previous navigation zone filters: {exc}", flush=True)
+
+    def navigation_zone_blocking_action(
+        self,
+        action: str,
+        pose: Optional[Dict[str, Any]] = None,
+    ) -> Optional[str]:
+        requested_action = str(action).strip().upper()
+        candidate = pose if isinstance(pose, dict) else self.pose
+        try:
+            x, y = float(candidate["x"]), float(candidate["y"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(x) or not math.isfinite(y):
+            return None
+        with self._lock:
+            zones = list(self._navigation_zones)
+        for zone in zones:
+            policy = self.ZONE_POLICIES.get(zone["zone_type"], {})
+            if (
+                requested_action in policy.get("blocked_actions", ())
+                and zone["min_x"] <= x <= zone["max_x"]
+                and zone["min_y"] <= y <= zone["max_y"]
+            ):
+                return zone["zone_type"]
+        return None
+
+    @staticmethod
+    def _pgm_dimensions(image_path: Path) -> tuple[int, int]:
+        data = image_path.read_bytes()
+        index = 0
+
+        def token() -> bytes:
+            nonlocal index
+            while index < len(data):
+                if data[index] in b" \t\r\n\v\f":
+                    index += 1
+                elif data[index] == ord("#"):
+                    while index < len(data) and data[index] not in b"\r\n":
+                        index += 1
+                else:
+                    break
+            start = index
+            while index < len(data) and data[index] not in b" \t\r\n\v\f#":
+                index += 1
+            if start == index:
+                raise ValueError("The saved map image has an invalid PGM header.")
+            return data[start:index]
+
+        if token() not in (b"P2", b"P5"):
+            raise ValueError("Saved navigation maps must use a PGM image.")
+        width, height = int(token()), int(token())
+        max_value = int(token())
+        if width <= 0 or height <= 0 or max_value <= 0:
+            raise ValueError("The saved map PGM dimensions are invalid.")
+        return width, height
+
+    def _write_zone_masks(
+        self,
+        map_yaml_path: Path,
+        zones: list[Dict[str, Any]],
+        speed_multiplier_override: Optional[float] = None,
+    ) -> tuple[Dict[str, Path], float, Dict[str, int]]:
+        try:
+            import yaml
+        except ImportError as exc:
+            raise RuntimeError("PyYAML is required to load saved map metadata for zone navigation.") from exc
+
+        metadata = yaml.safe_load(map_yaml_path.read_text(encoding="utf-8"))
+        if not isinstance(metadata, dict) or not isinstance(metadata.get("image"), str):
+            raise ValueError("Saved map YAML must define an image file.")
+        image_path = (map_yaml_path.parent / metadata["image"]).resolve()
+        if self.maps_dir not in image_path.parents or not image_path.is_file():
+            raise ValueError("The saved map image is not available in the robot maps directory.")
+        width, height = self._pgm_dimensions(image_path)
+        resolution = float(metadata.get("resolution", 0.0))
+        origin = metadata.get("origin")
+        if not math.isfinite(resolution) or resolution <= 0.0 or not isinstance(origin, list) or len(origin) < 3:
+            raise ValueError("Saved map YAML has invalid resolution or origin metadata.")
+        origin_x, origin_y, origin_yaw = (float(value) for value in origin[:3])
+        if not all(math.isfinite(value) for value in (origin_x, origin_y, origin_yaw)):
+            raise ValueError("Saved map origin must contain finite coordinates.")
+
+        layer_cells = {
+            layer: bytearray(width * height)
+            for layer in self.ZONE_MASK_LAYERS
+        }
+        speed_zones = [
+            zone for zone in zones
+            if self.ZONE_POLICIES[zone["zone_type"]].get("mask_value") == "SPEED_LIMIT"
+        ]
+        max_zone_speed = max((zone["max_speed"] for zone in speed_zones), default=1.0)
+        speed_multiplier = (
+            float(speed_multiplier_override)
+            if speed_multiplier_override is not None
+            else max_zone_speed / 100.0
+        )
+        if not math.isfinite(speed_multiplier) or speed_multiplier <= 0.0:
+            raise ValueError("Speed filter multiplier must be a positive finite value.")
+        cosine, sine = math.cos(origin_yaw), math.sin(origin_yaw)
+
+        for zone in zones:
+            policy = self.ZONE_POLICIES[zone["zone_type"]]
+            layer = policy.get("mask_layer")
+            if layer is None:
+                continue
+            layer_config = self.ZONE_MASK_LAYERS.get(layer)
+            if layer_config is None:
+                raise ValueError(f"Navigation zone layer '{layer}' is not configured.")
+            cells = layer_cells[layer]
+            encoding = policy.get("mask_value")
+            if encoding == "LETHAL":
+                cell_value = 1
+            elif encoding == "SPEED_LIMIT":
+                cell_value = max(1, min(100, round(zone["max_speed"] / speed_multiplier)))
+            else:
+                raise ValueError(f"Navigation zone type '{zone['zone_type']}' has no supported mask encoding.")
+            corners = (
+                (zone["min_x"], zone["min_y"]), (zone["min_x"], zone["max_y"]),
+                (zone["max_x"], zone["min_y"]), (zone["max_x"], zone["max_y"]),
+            )
+            local = []
+            for world_x, world_y in corners:
+                dx, dy = world_x - origin_x, world_y - origin_y
+                local.append((cosine * dx + sine * dy, -sine * dx + cosine * dy))
+            min_col = max(0, int(math.floor(min(point[0] for point in local) / resolution)))
+            max_col = min(width - 1, int(math.floor(max(point[0] for point in local) / resolution)))
+            min_row = max(0, height - 1 - int(math.floor(max(point[1] for point in local) / resolution)))
+            max_row = min(height - 1, height - 1 - int(math.floor(min(point[1] for point in local) / resolution)))
+            if max_col < min_col or max_row < min_row:
+                continue
+            for row in range(min_row, max_row + 1):
+                local_y = (height - row - 0.5) * resolution
+                for col in range(min_col, max_col + 1):
+                    local_x = (col + 0.5) * resolution
+                    world_x = origin_x + cosine * local_x - sine * local_y
+                    world_y = origin_y + sine * local_x + cosine * local_y
+                    if zone["min_x"] <= world_x <= zone["max_x"] and zone["min_y"] <= world_y <= zone["max_y"]:
+                        offset = row * width + col
+                        self._merge_zone_mask_cell(cells, offset, cell_value, layer_config)
+
+        # Keep sub-cell zones represented by at least their center cell on the raster.
+        for zone in zones:
+            policy = self.ZONE_POLICIES[zone["zone_type"]]
+            layer = policy.get("mask_layer")
+            if layer is None:
+                continue
+            layer_config = self.ZONE_MASK_LAYERS[layer]
+            encoding = policy.get("mask_value")
+            if encoding == "LETHAL":
+                cell_value = 1
+            elif encoding == "SPEED_LIMIT":
+                cell_value = max(1, min(100, round(zone["max_speed"] / speed_multiplier)))
+            else:
+                continue
+            world_x = (zone["min_x"] + zone["max_x"]) / 2.0
+            world_y = (zone["min_y"] + zone["max_y"]) / 2.0
+            dx, dy = world_x - origin_x, world_y - origin_y
+            local_x = cosine * dx + sine * dy
+            local_y = -sine * dx + cosine * dy
+            col = int(math.floor(local_x / resolution))
+            grid_row = int(math.floor(local_y / resolution))
+            image_row = height - 1 - grid_row
+            if 0 <= col < width and 0 <= image_row < height:
+                offset = image_row * width + col
+                self._merge_zone_mask_cell(layer_cells[layer], offset, cell_value, layer_config)
+
+        stem = re.sub(r"[^A-Za-z0-9_-]", "_", map_yaml_path.stem)
+        mask_paths: Dict[str, Path] = {}
+        mask_cell_counts_by_layer: Dict[str, int] = {}
+
+        def write_mask(yaml_path: Path, cells: bytearray, mode: str, encoding: str) -> None:
+            pgm_path = yaml_path.with_suffix(".pgm")
+            with pgm_path.open("w", encoding="ascii", newline="\n") as image:
+                image.write(f"P2\n{width} {height}\n255\n")
+                for row in range(height):
+                    values = []
+                    for col in range(width):
+                        value = cells[row * width + col]
+                        if encoding == "LETHAL":
+                            values.append("0" if value else "255")
+                        elif encoding == "SPEED_LIMIT":
+                            values.append(str(round((100 - value) * 255 / 100)))
+                        else:
+                            raise ValueError(f"Unsupported navigation mask encoding '{encoding}'.")
+                    image.write(" ".join(values) + "\n")
+            yaml_path.write_text(
+                f"image: {pgm_path.name}\nresolution: {resolution:.12g}\n"
+                f"origin: [{origin_x:.12g}, {origin_y:.12g}, {origin_yaw:.12g}]\n"
+                f"negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\nmode: {mode}\n",
+                encoding="utf-8",
+            )
+
+        for layer, config in self.ZONE_MASK_LAYERS.items():
+            yaml_path = self.maps_dir / f"{stem}_{config['filename_suffix']}.yaml"
+            cells = layer_cells[layer]
+            write_mask(yaml_path, cells, config["mode"], config["encoding"])
+            mask_paths[layer] = yaml_path
+            mask_cell_counts_by_layer[layer] = sum(value != 0 for value in cells)
+        return mask_paths, speed_multiplier, mask_cell_counts_by_layer
+
+    @staticmethod
+    def _merge_zone_mask_cell(cells: bytearray, offset: int, value: int, config: Dict[str, Any]) -> None:
+        if config["encoding"] == "LETHAL":
+            cells[offset] = max(cells[offset], value)
+        elif config["encoding"] == "SPEED_LIMIT":
+            cells[offset] = value if cells[offset] == 0 else min(cells[offset], value)
+        else:
+            raise ValueError(f"Unsupported navigation mask encoding '{config['encoding']}'.")
+
     def _start_navigation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         target = payload.get("target") or {}
         values = self._pose_values(target)
         if values is None:
             return self._failure("Navigation target requires finite x, y and theta values.")
+        blocking_zone = self.navigation_zone_blocking_action("GOAL", {"x": values[0], "y": values[1]})
+        if blocking_zone is not None:
+            return self._failure(f"Navigation target is inside a {blocking_zone} zone.")
         if self._node is None or self._action_client is None:
             return self._failure(self.error or "ROS is unavailable.")
         command_id = str(payload.get("command_id") or "").strip()
@@ -1269,12 +1798,13 @@ class RobotRuntimeGateway:
             self._goal_timeout_generation += 1
             generation = self._goal_timeout_generation
             self.active_goal_id = command_id
+            self._active_goal_request = dict(payload)
             self.navigation_state = "SENDING"
             self.error = None
             self._goal_timeout_sec = timeout_sec
             self._goal_best_distance_remaining = None
             self._goal_progress_pose = (self.pose["x"], self.pose["y"])
-            self._reset_goal_timeout_locked(command_id, generation)
+            self._start_goal_submission_timeout_locked(command_id, generation)
 
         if not self._action_client.server_is_ready():
             self._action_client.wait_for_server(timeout_sec=2.0)
@@ -1322,8 +1852,12 @@ class RobotRuntimeGateway:
             if command_id and self.active_goal_id and command_id != self.active_goal_id:
                 return self._failure("The requested command is not the active goal.")
             goal_handle = self._goal_handle
+            goal_pending = self.navigation_state == "SENDING" and goal_handle is None
             self.navigation_state = "CANCELING"
-            self._navigation_timeout_clear_locked()
+            if goal_pending:
+                self._navigation_progress_timeout_clear_locked()
+            else:
+                self._navigation_timeout_clear_locked()
         if goal_handle is not None:
             try:
                 goal_handle.cancel_goal_async()
@@ -1344,6 +1878,7 @@ class RobotRuntimeGateway:
                     self.error = "GOAL_REJECTED"
                     self._goal_handle = None
                     self.active_goal_id = None
+                    self._active_goal_request = None
                 return
             with self._lock:
                 if self.active_goal_id != command_id or self._goal_timeout_generation != generation:
@@ -1351,9 +1886,11 @@ class RobotRuntimeGateway:
                 else:
                     stale = False
                     cancel_requested = self.navigation_state == "CANCELING"
+                    self._goal_submission_timeout_clear_locked()
                     self._goal_handle = goal_handle
                     if not cancel_requested:
                         self.navigation_state = "NAVIGATING"
+                        self._reset_goal_timeout_locked(command_id, generation)
             if stale:
                 goal_handle.cancel_goal_async()
                 return
@@ -1371,6 +1908,7 @@ class RobotRuntimeGateway:
                     self.error = str(exc)
                     self._goal_handle = None
                     self.active_goal_id = None
+                    self._active_goal_request = None
 
     def _on_navigation_result(self, future: Any, command_id: str, generation: int) -> None:
         try:
@@ -1402,6 +1940,7 @@ class RobotRuntimeGateway:
             self.error = result_error
             if state in {"SUCCEEDED", "CANCELED", "FAILED"}:
                 self.active_goal_id = None
+                self._active_goal_request = None
 
     def _on_goal_timeout(self, command_id: Optional[str], generation: int) -> None:
         with self._lock:
@@ -1416,6 +1955,7 @@ class RobotRuntimeGateway:
             self.error = "NO_PROGRESS_TIMEOUT"
             self.active_goal_id = None
             self._goal_handle = None
+            self._active_goal_request = None
             self._goal_timeout_generation += 1
             self._navigation_timeout_clear_locked()
         if goal_handle is not None:
@@ -1423,6 +1963,23 @@ class RobotRuntimeGateway:
                 goal_handle.cancel_goal_async()
             except Exception:
                 pass
+        self._publish_stop()
+
+    def _on_goal_submission_timeout(self, command_id: str, generation: int) -> None:
+        with self._lock:
+            if (
+                self.active_goal_id != command_id
+                or self._goal_timeout_generation != generation
+                or self.navigation_state not in {"SENDING", "CANCELING"}
+            ):
+                return
+            self.navigation_state = "FAILED"
+            self.error = "GOAL_SUBMISSION_TIMEOUT"
+            self.active_goal_id = None
+            self._goal_handle = None
+            self._active_goal_request = None
+            self._goal_timeout_generation += 1
+            self._navigation_timeout_clear_locked()
         self._publish_stop()
 
     def _on_feedback(self, feedback: Any, command_id: str, generation: int) -> None:
@@ -1462,12 +2019,33 @@ class RobotRuntimeGateway:
                 self._reset_goal_timeout_locked(command_id, generation)
 
     def _navigation_timeout_clear_locked(self) -> None:
+        self._goal_submission_timeout_clear_locked()
+        self._navigation_progress_timeout_clear_locked()
+
+    def _goal_submission_timeout_clear_locked(self) -> None:
+        timer = self._goal_submission_timer
+        self._goal_submission_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _navigation_progress_timeout_clear_locked(self) -> None:
         timer = self._goal_timeout_timer
         self._goal_timeout_timer = None
         if timer is not None:
             timer.cancel()
         self._goal_best_distance_remaining = None
         self._goal_progress_pose = None
+
+    def _start_goal_submission_timeout_locked(self, command_id: str, generation: int) -> None:
+        self._goal_submission_timeout_clear_locked()
+        timer = threading.Timer(
+            self.NAV_GOAL_SUBMISSION_TIMEOUT_SEC,
+            self._on_goal_submission_timeout,
+            args=(command_id, generation),
+        )
+        timer.daemon = True
+        self._goal_submission_timer = timer
+        timer.start()
 
     def _reset_goal_timeout_locked(self, command_id: str, generation: int) -> None:
         timer = self._goal_timeout_timer

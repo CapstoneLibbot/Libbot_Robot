@@ -57,6 +57,8 @@ class WorkflowEngine:
                 and self.runtime_gateway is not None
                 and getattr(self.runtime_gateway, "use_sim_time", False)):
             enriched_step["_simulation_speed_provider"] = self._simulation_speed
+        if self.runtime_gateway is not None:
+            enriched_step["_zone_action_checker"] = self.runtime_gateway.navigation_zone_blocking_action
         enriched_step["_event_callback"] = self._submit_touch_event
         step_type = enriched_step.get("type", "WAIT")
         step_class = self.STEP_TYPES.get(step_type.upper(), WaitStep)

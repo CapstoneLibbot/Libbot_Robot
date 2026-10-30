@@ -60,6 +60,7 @@ ros2 run nav2_map_server map_saver_cli \
 
 ## Chạy Nav2 và gửi goal trực tiếp từ RViz
 
+
 Không chạy `mapping.launch.py` cùng lúc với navigation vì hai launch file sẽ tạo
 trùng LiDAR, STM32 bridge và robot state publisher.
 
@@ -80,7 +81,8 @@ ros2 launch libot_bringup navigation.launch.py \
   lidar_port:=/dev/rplidar \
   stm32_port:=/dev/serial0 \
   use_hardware:=false \
-  start_workflow_app:=false
+  start_workflow_app:=false \
+  autostart_navigation:=true
 ```
 
 Khi RViz mở:
