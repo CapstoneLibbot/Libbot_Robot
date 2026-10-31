@@ -63,6 +63,16 @@ class RobotRuntimeGateway:
     AMCL_MAX_SAMPLE_POSITION_SPREAD_M = 0.10
     AMCL_MAX_SAMPLE_YAW_SPREAD_RAD = 0.15
     NAVIGATION_PROGRESS_DISTANCE_M = 0.05
+    FOLLOW_PATH_ERROR_NAMES = {
+        100: "UNKNOWN",
+        101: "INVALID_CONTROLLER",
+        102: "TF_ERROR",
+        103: "INVALID_PATH",
+        104: "PATIENCE_EXCEEDED",
+        105: "FAILED_TO_MAKE_PROGRESS",
+        106: "NO_VALID_CONTROL",
+        107: "CONTROLLER_TIMED_OUT",
+    }
     NAV2_ACTIVATION_TIMEOUT_SEC = 30.0
     NAV_GOAL_SUBMISSION_TIMEOUT_SEC = 10.0
     NAVIGATION_NODES = (
@@ -725,6 +735,9 @@ class RobotRuntimeGateway:
                 "min_y": zone.get("minY", zone.get("min_y")),
                 "max_x": zone.get("maxX", zone.get("max_x")),
                 "max_y": zone.get("maxY", zone.get("max_y")),
+                "width": zone.get("width"),
+                "height": zone.get("height"),
+                "rotation_angle": zone.get("rotationAngle", zone.get("rotation_angle", 0.0)),
                 "max_speed": zone.get("maxSpeed", zone.get("max_speed", 0.0)),
             })
 
@@ -1402,6 +1415,21 @@ class RobotRuntimeGateway:
                 raise ValueError("Navigation zone bounds must be finite.")
             if bounds["min_x"] >= bounds["max_x"] or bounds["min_y"] >= bounds["max_y"]:
                 raise ValueError("Navigation zone bounds must have positive width and height.")
+            width_value = zone.get("width")
+            height_value = zone.get("height")
+            if (width_value is None) != (height_value is None):
+                raise ValueError("Oriented navigation zones must provide both width and height.")
+            width = height = None
+            if width_value is not None:
+                width, height = float(width_value), float(height_value)
+                if not math.isfinite(width) or not math.isfinite(height) or width <= 0.0 or height <= 0.0:
+                    raise ValueError("Oriented navigation zone dimensions must be positive and finite.")
+            try:
+                rotation_angle = float(zone.get("rotation_angle", 0.0) or 0.0)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("Navigation zone rotation must be numeric.") from exc
+            if not math.isfinite(rotation_angle):
+                raise ValueError("Navigation zone rotation must be finite.")
             max_speed = 0.0
             if policy.get("requires_max_speed"):
                 try:
@@ -1410,8 +1438,51 @@ class RobotRuntimeGateway:
                     raise ValueError("Navigation zone speed must be numeric.") from exc
                 if not math.isfinite(max_speed) or max_speed <= 0.0:
                     raise ValueError("SPEED_LIMIT requires max_speed greater than zero.")
-            normalized.append({"zone_type": zone_type, **bounds, "max_speed": max_speed})
+            normalized.append({
+                "zone_type": zone_type,
+                **bounds,
+                "width": width,
+                "height": height,
+                "rotation_angle": rotation_angle,
+                "max_speed": max_speed,
+            })
         return normalized
+
+    @staticmethod
+    def _zone_contains_world(zone: Dict[str, Any], world_x: float, world_y: float) -> bool:
+        width, height = zone.get("width"), zone.get("height")
+        if width is None or height is None:
+            return zone["min_x"] <= world_x <= zone["max_x"] and zone["min_y"] <= world_y <= zone["max_y"]
+
+        center_x = (zone["min_x"] + zone["max_x"]) / 2.0
+        center_y = (zone["min_y"] + zone["max_y"]) / 2.0
+        dx, dy = world_x - center_x, world_y - center_y
+        angle = zone["rotation_angle"]
+        cosine, sine = math.cos(angle), math.sin(angle)
+        local_x = cosine * dx + sine * dy
+        local_y = -sine * dx + cosine * dy
+        return abs(local_x) <= width / 2.0 and abs(local_y) <= height / 2.0
+
+    @staticmethod
+    def _zone_world_corners(zone: Dict[str, Any]) -> list[tuple[float, float]]:
+        width, height = zone.get("width"), zone.get("height")
+        center_x = (zone["min_x"] + zone["max_x"]) / 2.0
+        center_y = (zone["min_y"] + zone["max_y"]) / 2.0
+        if width is None or height is None:
+            return [
+                (zone["min_x"], zone["min_y"]), (zone["min_x"], zone["max_y"]),
+                (zone["max_x"], zone["min_y"]), (zone["max_x"], zone["max_y"]),
+            ]
+
+        cosine, sine = math.cos(zone["rotation_angle"]), math.sin(zone["rotation_angle"])
+        return [
+            (center_x + cosine * local_x - sine * local_y,
+             center_y + sine * local_x + cosine * local_y)
+            for local_x, local_y in (
+                (-width / 2.0, -height / 2.0), (-width / 2.0, height / 2.0),
+                (width / 2.0, -height / 2.0), (width / 2.0, height / 2.0),
+            )
+        ]
 
     @staticmethod
     def _zone_counts_by_type(zones: list[Dict[str, Any]]) -> Dict[str, int]:
@@ -1579,8 +1650,7 @@ class RobotRuntimeGateway:
             policy = self.ZONE_POLICIES.get(zone["zone_type"], {})
             if (
                 requested_action in policy.get("blocked_actions", ())
-                and zone["min_x"] <= x <= zone["max_x"]
-                and zone["min_y"] <= y <= zone["max_y"]
+                and self._zone_contains_world(zone, x, y)
             ):
                 return zone["zone_type"]
         return None
@@ -1675,10 +1745,7 @@ class RobotRuntimeGateway:
                 cell_value = max(1, min(100, round(zone["max_speed"] / speed_multiplier)))
             else:
                 raise ValueError(f"Navigation zone type '{zone['zone_type']}' has no supported mask encoding.")
-            corners = (
-                (zone["min_x"], zone["min_y"]), (zone["min_x"], zone["max_y"]),
-                (zone["max_x"], zone["min_y"]), (zone["max_x"], zone["max_y"]),
-            )
+            corners = self._zone_world_corners(zone)
             local = []
             for world_x, world_y in corners:
                 dx, dy = world_x - origin_x, world_y - origin_y
@@ -1695,7 +1762,7 @@ class RobotRuntimeGateway:
                     local_x = (col + 0.5) * resolution
                     world_x = origin_x + cosine * local_x - sine * local_y
                     world_y = origin_y + sine * local_x + cosine * local_y
-                    if zone["min_x"] <= world_x <= zone["max_x"] and zone["min_y"] <= world_y <= zone["max_y"]:
+                    if self._zone_contains_world(zone, world_x, world_y):
                         offset = row * width + col
                         self._merge_zone_mask_cell(cells, offset, cell_value, layer_config)
 
@@ -1924,6 +1991,9 @@ class RobotRuntimeGateway:
             error_message = str(getattr(action_result, "error_msg", "") or "").strip()
             if state == "FAILED":
                 details = [f"code={error_code}"]
+                controller_error_name = self.FOLLOW_PATH_ERROR_NAMES.get(error_code)
+                if controller_error_name:
+                    details.append(controller_error_name)
                 if error_message:
                     details.append(error_message)
                 result_error = f"NAVIGATION_FAILED: {'; '.join(details)}"
