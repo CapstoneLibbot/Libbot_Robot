@@ -22,7 +22,8 @@ class WaitStep(BaseStep):
         self.result_variable = self.config.get("result_variable") or self.config.get("result")
         self.allowed_values = self.config.get("allowed_values")
         default_timeout = 30.0 if self.context_key else self.seconds
-        self.timeout_sec = self._read_float("timeout_sec", default_timeout)
+        configured_timeout = self.config.get("timeout_sec", default_timeout)
+        self.timeout_sec = None if configured_timeout is None else self._read_float("timeout_sec", default_timeout)
         self.poll_interval_sec = self._read_float("poll_interval_sec", 0.1)
         self.expected_value = self.config.get("expected_value")
         self.simulation_speed_provider = self.config.get("_simulation_speed_provider")
@@ -58,11 +59,12 @@ class WaitStep(BaseStep):
 
         event_data = None
         if self.wait_for == "USER_TOUCH" and self.event_type:
-            self.ui.show_screen(self.ui_screen, {
-                "prompt": self.prompt,
-                "options": self.allowed_values or [],
-                "event_type": self.event_type,
-            }, event_type=str(self.event_type).upper())
+            if self.config.get("show_ui", True):
+                self.ui.show_screen(self.ui_screen, {
+                    "prompt": self.prompt,
+                    "options": self.allowed_values or [],
+                    "event_type": self.event_type,
+                }, event_type=str(self.event_type).upper())
             status, event_data = self._wait_for_event(context)
         elif self.context_key:
             status = self._wait_for_context(context)
@@ -91,9 +93,9 @@ class WaitStep(BaseStep):
         return payload
 
     def _wait_for_event(self, context: RobotContext) -> tuple[str, Any]:
-        deadline = time.monotonic() + max(self.timeout_sec, 0.0)
-        while time.monotonic() <= deadline:
-            if context.get("workflow_cancelled", False):
+        deadline = None if self.timeout_sec is None else time.monotonic() + max(self.timeout_sec, 0.0)
+        while deadline is None or time.monotonic() <= deadline:
+            if context.get("workflow_cancelled", False) or context.get("low_battery_preempt_requested", False):
                 return "cancelled", None
             value = context.pop_event(str(self.event_type))
             if value is not None:

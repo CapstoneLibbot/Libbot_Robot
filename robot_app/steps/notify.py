@@ -38,6 +38,7 @@ class NotifyStep(BaseStep):
             "status": "notified",
             "type": "NOTIFY",
             "channel": self.channel,
+            "event_type": self.config.get("event_type"),
             "message": message,
             "delivery": delivery,
         }
