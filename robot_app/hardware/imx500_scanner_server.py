@@ -7,7 +7,7 @@ import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from socketserver import BaseRequestHandler, ThreadingTCPServer
+from socketserver import StreamRequestHandler, ThreadingTCPServer
 from typing import Any
 
 
@@ -133,7 +133,7 @@ class CameraFrames:
                     pass
 
 
-class ScannerRequestHandler(BaseRequestHandler):
+class ScannerRequestHandler(StreamRequestHandler):
     def handle(self) -> None:
         camera: CameraFrames = self.server.camera  # type: ignore[attr-defined]
         try:
