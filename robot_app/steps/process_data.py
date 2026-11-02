@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 from typing import Any, Dict, Optional
@@ -29,6 +30,7 @@ class ProcessDataStep(BaseStep):
             or "real"
         ).strip().lower()
         base_url = self._resolve_backend_base_url(context)
+        action_metadata: Dict[str, Any] = {}
         try:
             if self.operation == "SEARCH_BOOK":
                 self._require_base_url(base_url)
@@ -143,6 +145,34 @@ class ProcessDataStep(BaseStep):
                         "runtimeId": payload.get("runtime_id") or runtime_id,
                     },
                 )
+            elif self.operation in {
+                "PATROL_SCOPE",
+                "BUILD_PATROL_COVERAGE_PLAN",
+                "CLASSIFY_PATROL_OBSERVATIONS",
+                "UPDATE_PATH_COVERAGE",
+                "GENERATE_PATROL_REPORT",
+            }:
+                self._require_base_url(base_url)
+                action_payload = payload if isinstance(payload, dict) else {}
+                action_response = self._json_request(
+                    f"{base_url}/api/workflow-data/patrol/actions",
+                    method="POST",
+                    body={
+                        "missionId": action_payload.get("mission_id") or context.get("mission_id"),
+                        "runtimeId": action_payload.get("runtime_id") or runtime_id,
+                        "action": self.operation,
+                        "payload": action_payload,
+                        "idempotencyKey": self._idempotency_key(action_payload, context),
+                    },
+                )
+                if not isinstance(action_response, dict) or str(action_response.get("action_status", "")).upper() != "SUCCEEDED":
+                    raise ValueError("Patrol action returned an invalid response.")
+                data = action_response.get("data")
+                action_metadata = {
+                    "action_status": action_response.get("action_status"),
+                    "request_id": action_response.get("request_id"),
+                    "affected_records": action_response.get("affected_records", 0),
+                }
             elif self.operation in {"IDENTITY", ""}:
                 data = payload
             else:
@@ -150,7 +180,7 @@ class ProcessDataStep(BaseStep):
         except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
             return self._error(str(exc))
 
-        result = {"status": "processed", "type": "PROCESS_DATA", "action": self.operation, "data": data}
+        result = {"status": "processed", "type": "PROCESS_DATA", "action": self.operation, "data": data, **action_metadata}
         context.set("processed_data", result)
         return result
 
@@ -166,6 +196,13 @@ class ProcessDataStep(BaseStep):
     def _require_base_url(self, base_url: str) -> None:
         if not base_url:
             raise ValueError("backend_base_url is required for this PROCESS_DATA action.")
+
+    def _idempotency_key(self, payload: Dict[str, Any], context: RobotContext) -> str:
+        canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        fingerprint = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
+        execution_id = str(context.get("execution_id") or "legacy")
+        mission_id = str(context.get("mission_id") or "mission")
+        return f"{mission_id}:{execution_id}:{self.operation}:{fingerprint}"
 
     def _resolve_backend_base_url(self, context: RobotContext) -> str:
         # The API request host may be `localhost`, which refers to the robot

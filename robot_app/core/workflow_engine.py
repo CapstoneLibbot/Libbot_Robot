@@ -6,6 +6,7 @@ import os
 import shutil
 import threading
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib import request
 
@@ -60,9 +61,12 @@ class WorkflowEngine:
             enriched_step["_simulation_speed_provider"] = self._simulation_speed
         if self.runtime_gateway is not None:
             enriched_step["_zone_action_checker"] = self.runtime_gateway.navigation_zone_blocking_action
+            enriched_step["_runtime_gateway"] = self.runtime_gateway
         enriched_step["_event_callback"] = self._submit_touch_event
-        step_type = enriched_step.get("type", "WAIT")
-        step_class = self.STEP_TYPES.get(step_type.upper(), WaitStep)
+        step_type = str(enriched_step.get("type", "")).upper()
+        step_class = self.STEP_TYPES.get(step_type)
+        if step_class is None:
+            raise ValueError(f"Unsupported workflow step type: {step_type or '<missing>'}")
         return step_class(enriched_step)
 
     def _simulation_speed(self) -> float:
@@ -78,16 +82,18 @@ class WorkflowEngine:
         self.steps.append(self.create_step(step_def))
 
     def execute_step(self, step_def: Dict[str, Any]) -> Dict[str, Any]:
+        started_at = datetime.now(timezone.utc).isoformat()
+        configuration = step_def.get("params") if isinstance(step_def.get("params"), dict) else step_def
         runtime_id = str(self.context.get("runtime_id") or os.getenv("LIBOT_RUNTIME_ID") or "real").lower()
         if (runtime_id != "sim"
                 and str(step_def.get("type", "")).upper() == "SCAN"
-                and str(step_def.get("sensor", "")).lower() == "patrol_observation"
+                and str(configuration.get("sensor", "")).lower() == "patrol_observation"
                 and self.runtime_gateway is not None):
             observation = self.runtime_gateway.wait_for_patrol_observation(
-                float(step_def.get("timeout_sec", 10))
+                float(configuration.get("timeout_sec", 10))
             )
             if observation is not None:
-                self.context.set(str(step_def.get("context_key", "patrol_observation")), observation)
+                self.context.set(str(configuration.get("context_key", "patrol_observation")), observation)
         step = self.create_step(step_def)
         if isinstance(step, MoveStep):
             with self.lock:
@@ -99,16 +105,41 @@ class WorkflowEngine:
                 with self.lock:
                     if self._active_navigation is step.navigation:
                         self._active_navigation = None
-        if str(step_def.get("type", "")).upper() == "SCAN" and str(step_def.get("sensor", "")).lower() == "patrol_observation":
-            self.context.set(str(step_def.get("context_key", "patrol_observation")), None)
+        if str(step_def.get("type", "")).upper() == "SCAN" and str(configuration.get("sensor", "")).lower() == "patrol_observation":
+            self.context.set(str(configuration.get("context_key", "patrol_observation")), None)
         with self.lock:
             self.context.set_step_result(step.name, result)
+        step_type = str(step.step_type).upper()
+        succeeded = self._result_succeeded(step_type, result)
+        finished_at = datetime.now(timezone.utc).isoformat()
+        error = None if succeeded else str(result.get("message") or result.get("error") or "Step failed.") if isinstance(result, dict) else "Step failed."
         return {
-            "status": "ok",
+            "step_id": str(step_def.get("id", step.name)),
+            "type": step_type,
+            "status": "SUCCEEDED" if succeeded else "FAILED",
+            "data": result,
+            "error": error,
+            "attempt": 1,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            # Retain the legacy names while backend consumers migrate to the envelope.
+            "engine_status": "ok",
             "step": step.name,
-            "step_type": step.step_type,
+            "step_type": step_type,
             "result": result,
         }
+
+    @staticmethod
+    def _result_succeeded(step_type: str, result: Any) -> bool:
+        if not isinstance(result, dict):
+            return True
+        if step_type == "MOVE":
+            return result.get("status") == "ok" and result.get("move_status") == "COMPLETED"
+        if step_type == "SCAN":
+            return result.get("status") == "scanned"
+        if step_type == "END":
+            return str(result.get("workflow_status", "")).upper() == "SUCCEEDED"
+        return result.get("status") not in {"error", "failed", "timeout"}
 
     def _apply_output_mapping(self, step_def: Dict[str, Any], step_result: Dict[str, Any]) -> None:
         mapping = step_def.get("output_mapping", {})
@@ -174,7 +205,9 @@ class WorkflowEngine:
         }
         index = 0
         visited = 0
-        maximum_steps = max(len(step_defs) * 4, 1)
+        endpoint_targets = self.context.get("target_endpoints")
+        route_factor = len(endpoint_targets) + 2 if isinstance(endpoint_targets, list) else 4
+        maximum_steps = max(len(step_defs) * min(max(route_factor, 4), 502), 1)
 
         while 0 <= index < len(step_defs) and visited < maximum_steps:
             if execution_id is not None and (
@@ -188,9 +221,17 @@ class WorkflowEngine:
                 step_result = self.execute_step(step_def)
             except Exception as exc:
                 step_result = {
-                    "status": "ok",
+                    "step_id": str(step_def.get("id", step_def.get("name", f"step-{index + 1}"))),
+                    "type": str(step_def.get("type", "")).upper(),
+                    "status": "FAILED",
+                    "data": {"status": "error", "message": str(exc)},
+                    "error": str(exc),
+                    "attempt": 1,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "engine_status": "ok",
                     "step": step_def.get("name", step_def.get("id", f"step-{index + 1}")),
-                    "step_type": str(step_def.get("type", "WAIT")).upper(),
+                    "step_type": str(step_def.get("type", "")).upper(),
                     "result": {"status": "error", "message": str(exc)},
                 }
             self._apply_output_mapping(step_def, step_result)
@@ -277,6 +318,8 @@ class WorkflowEngine:
         step_type = str(step_result.get("step_type", "")).upper()
 
         if step_type == "EVALUATE":
+            if result.get("status") == "error":
+                return transitions.get("on_error")
             if result.get("result"):
                 return transitions.get("on_true", transitions.get("on_true_step"))
             return transitions.get("on_false", transitions.get("on_false_step"))
@@ -451,6 +494,18 @@ class WorkflowEngine:
             step_type = str(definition.get("type", "")).upper()
             if step_type not in self.STEP_TYPES:
                 return f"Step {index + 1} has unsupported type '{step_type}'."
+            if "params" in definition:
+                if not isinstance(definition.get("params"), dict):
+                    return f"Step {index + 1} params must be an object."
+                for field in ("id", "name", "output_mapping", "transitions", "policy"):
+                    if field not in definition:
+                        return f"Step {index + 1} envelope is missing '{field}'."
+                if not isinstance(definition.get("output_mapping"), dict):
+                    return f"Step {index + 1} output_mapping must be an object."
+                if not isinstance(definition.get("transitions"), dict):
+                    return f"Step {index + 1} transitions must be an object."
+                if not isinstance(definition.get("policy"), dict):
+                    return f"Step {index + 1} policy must be an object."
             identifiers.append(str(definition.get("id", definition.get("name", index))))
         if len(set(identifiers)) != len(identifiers):
             return "Workflow step ids must be unique."
@@ -843,7 +898,18 @@ class WorkflowEngine:
         return result
 
     def _with_default_step_config(self, step_def: Dict[str, Any]) -> Dict[str, Any]:
-        enriched = dict(step_def)
+        if not isinstance(step_def, dict):
+            raise ValueError("Workflow step definition must be an object.")
+        if "params" in step_def:
+            params = step_def.get("params")
+            if not isinstance(params, dict):
+                raise ValueError("Workflow step params must be an object.")
+            enriched = dict(params)
+            for key in ("id", "name", "type", "output_mapping", "transitions", "policy"):
+                if key in step_def:
+                    enriched[key] = step_def[key]
+        else:
+            enriched = dict(step_def)
         step_type = str(enriched.get("type", "WAIT")).upper()
         hardware = self.settings.get("hardware", {})
 
