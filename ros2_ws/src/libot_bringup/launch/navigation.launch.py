@@ -36,6 +36,10 @@ def generate_launch_description():
             default_value="/ros2_ws/maps/library_map.yaml",
             description="Absolute path to the saved map YAML file",
         ),
+        DeclareLaunchArgument("zones_enabled", default_value="false"),
+        DeclareLaunchArgument("keepout_mask", default_value=""),
+        DeclareLaunchArgument("speed_mask", default_value=""),
+        DeclareLaunchArgument("speed_filter_multiplier", default_value="0.01"),
         DeclareLaunchArgument(
             "params_file",
             default_value=default_params,
@@ -75,7 +79,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "autostart_navigation",
-            default_value="true",
+            default_value="false",
             description="Automatically activate the navigation lifecycle nodes",
         ),
         DeclareLaunchArgument(
@@ -121,6 +125,76 @@ def generate_launch_description():
                     ),
                 },
             ],
+        ),
+        Node(
+            package="nav2_map_server",
+            executable="map_server",
+            name="keepout_filter_mask_server",
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("zones_enabled")),
+            parameters=[LaunchConfiguration("params_file"), {
+                "yaml_filename": LaunchConfiguration("keepout_mask"),
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
+            }],
+            remappings=[("map", "/keepout_filter_mask")],
+        ),
+        Node(
+            package="nav2_map_server",
+            executable="map_server",
+            name="speed_filter_mask_server",
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("zones_enabled")),
+            parameters=[LaunchConfiguration("params_file"), {
+                "yaml_filename": LaunchConfiguration("speed_mask"),
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
+            }],
+            remappings=[("map", "/speed_filter_mask")],
+        ),
+        Node(
+            package="nav2_map_server",
+            executable="costmap_filter_info_server",
+            name="keepout_costmap_filter_info_server",
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("zones_enabled")),
+            parameters=[{
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
+                "type": 0,
+                "filter_info_topic": "/keepout_costmap_filter_info",
+                "mask_topic": "/keepout_filter_mask",
+                "base": 0.0,
+                "multiplier": 1.0,
+            }],
+        ),
+        Node(
+            package="nav2_map_server",
+            executable="costmap_filter_info_server",
+            name="speed_costmap_filter_info_server",
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("zones_enabled")),
+            parameters=[{
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
+                "type": 2,
+                "filter_info_topic": "/speed_costmap_filter_info",
+                "mask_topic": "/speed_filter_mask",
+                "base": 0.0,
+                "multiplier": ParameterValue(LaunchConfiguration("speed_filter_multiplier"), value_type=float),
+            }],
+        ),
+        Node(
+            package="nav2_lifecycle_manager",
+            executable="lifecycle_manager",
+            name="lifecycle_manager_costmap_filters",
+            output="screen",
+            condition=IfCondition(LaunchConfiguration("zones_enabled")),
+            parameters=[{
+                "autostart": True,
+                "node_names": [
+                    "keepout_filter_mask_server",
+                    "speed_filter_mask_server",
+                    "keepout_costmap_filter_info_server",
+                    "speed_costmap_filter_info_server",
+                ],
+            }],
         ),
         Node(
             package="nav2_lifecycle_manager",
@@ -222,9 +296,11 @@ def generate_launch_description():
             name="lifecycle_manager_navigation",
             output="screen",
             parameters=[{
-                # The real runtime activates navigation only after AMCL is stable.
-                # The gateway explicitly starts this manager for SIM on map load.
-                "autostart": False,
+                # The web runtime keeps this false and activates Nav2 after
+                # AMCL is stable. Standalone clients can opt in to autostart.
+                "autostart": ParameterValue(
+                    LaunchConfiguration("autostart_navigation"), value_type=bool
+                ),
                 "node_names": [
                     "controller_server",
                     "smoother_server",

@@ -8,11 +8,14 @@ x-ros2-common: &ros2-common
   volumes:
     - ../ros2_ws/src:/ros2_ws/src
     - ../robot_app:/ros2_ws/robot_app
+    - ../code:/ros2_ws/code
     - ../maps:/ros2_ws/maps
     - ../logs:/ros2_ws/logs
     - /tmp/.X11-unix:/tmp/.X11-unix:rw
   environment:
-    ROS_DOMAIN_ID: "0"
+    RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+    ROS_DOMAIN_ID: "7"
+    ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
     LIBOT_BACKEND_URL: "${LIBOT_BACKEND_URL:-http://127.0.0.1:5205}"
     DISPLAY: "${DISPLAY:-:0}"
     QT_X11_NO_MITSHM: "1"
@@ -39,7 +42,9 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      ROS_DOMAIN_ID: "0"
+      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
+      ROS_DOMAIN_ID: "7"
+      ROS_AUTOMATIC_DISCOVERY_RANGE: LOCALHOST
       LIBOT_RUNTIME_ID: sim
       LIBOT_TCP_PORT: "9001"
       LIBOT_SIM_WORLD: library

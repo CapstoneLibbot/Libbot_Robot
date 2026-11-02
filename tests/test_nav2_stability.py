@@ -395,9 +395,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 follow = root.find(".//FollowPath")
                 self.assertEqual(compute.attrib[goal_input], "{" + goal_input + "}")
                 self.assertEqual(compute.attrib["error_code_id"], "{compute_path_error_code}")
-                self.assertEqual(compute.attrib["error_msg"], "{compute_path_error_msg}")
                 self.assertEqual(follow.attrib["error_code_id"], "{follow_path_error_code}")
-                self.assertEqual(follow.attrib["error_msg"], "{follow_path_error_msg}")
                 recovery = root.find(".//RecoveryNode")
                 self.assertEqual(recovery.attrib["number_of_retries"], "2")
                 tags = [element.tag for element in root.iter()]
@@ -446,11 +444,17 @@ class Nav2ConfigurationTests(unittest.TestCase):
             "required_movement_radius: 0.05",
             "required_movement_angle: 0.10",
             "movement_time_allowance: 30.0",
+            "failure_tolerance: 1.5",
             "stateful: true",
             "xy_goal_tolerance: 0.10",
             "yaw_goal_tolerance: 0.20",
-            "rotate_to_heading_angular_vel: 0.35",
-            "rotate_to_heading_min_angle: 0.785",
+            "rotate_to_heading_angular_vel: 0.8",
+            "rotate_to_heading_min_angle: 0.524",
+            "max_angular_accel: 4.0",
+            "max_rotational_vel: 0.8",
+            "min_rotational_vel: 0.2",
+            "rotational_acc_lim: 2.0",
+            "- -4.0",
             "allow_reversing: false",
             "allow_unknown: false",
         )

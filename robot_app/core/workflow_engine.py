@@ -6,6 +6,7 @@ import os
 import shutil
 import threading
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib import request
 
@@ -46,6 +47,7 @@ class WorkflowEngine:
         self.lock = threading.RLock()
         self.executions: Dict[str, Dict[str, Any]] = {}
         self._active_navigation: Optional[NavigationController] = None
+        self._queued_auto_charge: Optional[Dict[str, Any]] = None
 
     def load_default_workflow(self) -> None:
         workflow_steps = self.settings.get("workflow", {}).get("steps", [])
@@ -57,9 +59,14 @@ class WorkflowEngine:
                 and self.runtime_gateway is not None
                 and getattr(self.runtime_gateway, "use_sim_time", False)):
             enriched_step["_simulation_speed_provider"] = self._simulation_speed
+        if self.runtime_gateway is not None:
+            enriched_step["_zone_action_checker"] = self.runtime_gateway.navigation_zone_blocking_action
+            enriched_step["_runtime_gateway"] = self.runtime_gateway
         enriched_step["_event_callback"] = self._submit_touch_event
-        step_type = enriched_step.get("type", "WAIT")
-        step_class = self.STEP_TYPES.get(step_type.upper(), WaitStep)
+        step_type = str(enriched_step.get("type", "")).upper()
+        step_class = self.STEP_TYPES.get(step_type)
+        if step_class is None:
+            raise ValueError(f"Unsupported workflow step type: {step_type or '<missing>'}")
         return step_class(enriched_step)
 
     def _simulation_speed(self) -> float:
@@ -75,16 +82,18 @@ class WorkflowEngine:
         self.steps.append(self.create_step(step_def))
 
     def execute_step(self, step_def: Dict[str, Any]) -> Dict[str, Any]:
+        started_at = datetime.now(timezone.utc).isoformat()
+        configuration = step_def.get("params") if isinstance(step_def.get("params"), dict) else step_def
         runtime_id = str(self.context.get("runtime_id") or os.getenv("LIBOT_RUNTIME_ID") or "real").lower()
         if (runtime_id != "sim"
                 and str(step_def.get("type", "")).upper() == "SCAN"
-                and str(step_def.get("sensor", "")).lower() == "patrol_observation"
+                and str(configuration.get("sensor", "")).lower() == "patrol_observation"
                 and self.runtime_gateway is not None):
             observation = self.runtime_gateway.wait_for_patrol_observation(
-                float(step_def.get("timeout_sec", 10))
+                float(configuration.get("timeout_sec", 10))
             )
             if observation is not None:
-                self.context.set(str(step_def.get("context_key", "patrol_observation")), observation)
+                self.context.set(str(configuration.get("context_key", "patrol_observation")), observation)
         step = self.create_step(step_def)
         if isinstance(step, MoveStep):
             with self.lock:
@@ -96,16 +105,41 @@ class WorkflowEngine:
                 with self.lock:
                     if self._active_navigation is step.navigation:
                         self._active_navigation = None
-        if str(step_def.get("type", "")).upper() == "SCAN" and str(step_def.get("sensor", "")).lower() == "patrol_observation":
-            self.context.set(str(step_def.get("context_key", "patrol_observation")), None)
+        if str(step_def.get("type", "")).upper() == "SCAN" and str(configuration.get("sensor", "")).lower() == "patrol_observation":
+            self.context.set(str(configuration.get("context_key", "patrol_observation")), None)
         with self.lock:
             self.context.set_step_result(step.name, result)
+        step_type = str(step.step_type).upper()
+        succeeded = self._result_succeeded(step_type, result)
+        finished_at = datetime.now(timezone.utc).isoformat()
+        error = None if succeeded else str(result.get("message") or result.get("error") or "Step failed.") if isinstance(result, dict) else "Step failed."
         return {
-            "status": "ok",
+            "step_id": str(step_def.get("id", step.name)),
+            "type": step_type,
+            "status": "SUCCEEDED" if succeeded else "FAILED",
+            "data": result,
+            "error": error,
+            "attempt": 1,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            # Retain the legacy names while backend consumers migrate to the envelope.
+            "engine_status": "ok",
             "step": step.name,
-            "step_type": step.step_type,
+            "step_type": step_type,
             "result": result,
         }
+
+    @staticmethod
+    def _result_succeeded(step_type: str, result: Any) -> bool:
+        if not isinstance(result, dict):
+            return True
+        if step_type == "MOVE":
+            return result.get("status") == "ok" and result.get("move_status") == "COMPLETED"
+        if step_type == "SCAN":
+            return result.get("status") == "scanned"
+        if step_type == "END":
+            return str(result.get("workflow_status", "")).upper() == "SUCCEEDED"
+        return result.get("status") not in {"error", "failed", "timeout"}
 
     def _apply_output_mapping(self, step_def: Dict[str, Any], step_result: Dict[str, Any]) -> None:
         mapping = step_def.get("output_mapping", {})
@@ -171,10 +205,14 @@ class WorkflowEngine:
         }
         index = 0
         visited = 0
-        maximum_steps = max(len(step_defs) * 4, 1)
+        endpoint_targets = self.context.get("target_endpoints")
+        route_factor = len(endpoint_targets) + 2 if isinstance(endpoint_targets, list) else 4
+        maximum_steps = max(len(step_defs) * min(max(route_factor, 4), 502), 1)
 
         while 0 <= index < len(step_defs) and visited < maximum_steps:
-            if execution_id is not None and self._is_cancelled(execution_id):
+            if execution_id is not None and (
+                    self._is_cancelled(execution_id)
+                    or self._is_low_battery_preempt_requested(execution_id)):
                 break
             step_def = step_defs[index]
             if execution_id is not None:
@@ -183,9 +221,17 @@ class WorkflowEngine:
                 step_result = self.execute_step(step_def)
             except Exception as exc:
                 step_result = {
-                    "status": "ok",
+                    "step_id": str(step_def.get("id", step_def.get("name", f"step-{index + 1}"))),
+                    "type": str(step_def.get("type", "")).upper(),
+                    "status": "FAILED",
+                    "data": {"status": "error", "message": str(exc)},
+                    "error": str(exc),
+                    "attempt": 1,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "engine_status": "ok",
                     "step": step_def.get("name", step_def.get("id", f"step-{index + 1}")),
-                    "step_type": str(step_def.get("type", "WAIT")).upper(),
+                    "step_type": str(step_def.get("type", "")).upper(),
                     "result": {"status": "error", "message": str(exc)},
                 }
             self._apply_output_mapping(step_def, step_result)
@@ -208,6 +254,10 @@ class WorkflowEngine:
                     result=step_result.get("result"),
                     error=None if succeeded else str(step_result.get("result", {}).get("message") or step_result.get("result", {}).get("error") or f"Step {step_result.get('step')} failed."),
                 )
+
+            # A low-battery request takes effect only after the current step returns.
+            if execution_id is not None and self._is_low_battery_preempt_requested(execution_id):
+                break
 
             if str(step_result.get("step_type", "")).upper() == "END":
                 if step_result.get("result", {}).get("workflow_status") != "SUCCEEDED":
@@ -242,13 +292,15 @@ class WorkflowEngine:
             failed_step = failed_step or "workflow_transition_limit"
             failure_message = failure_message or "Workflow transition limit was reached."
 
+        low_battery_preempted = execution_id is not None and self._is_low_battery_preempt_requested(execution_id)
+        cancelled = execution_id is not None and self._is_cancelled(execution_id)
         return {
-            "status": "cancelled" if execution_id is not None and self._is_cancelled(execution_id) else "error" if failed_step else "ok",
+            "status": "cancelled" if cancelled or low_battery_preempted else "error" if failed_step else "ok",
             "task_id": task_id,
             "requested_count": len(step_defs),
             "completed_count": len(results),
             "failed_step": failed_step,
-            "error": failure_message,
+            "error": "LOW_BATTERY: mission interrupted at a safe step boundary." if low_battery_preempted else failure_message,
             "results": results,
         }
 
@@ -266,6 +318,8 @@ class WorkflowEngine:
         step_type = str(step_result.get("step_type", "")).upper()
 
         if step_type == "EVALUATE":
+            if result.get("status") == "error":
+                return transitions.get("on_error")
             if result.get("result"):
                 return transitions.get("on_true", transitions.get("on_true_step"))
             return transitions.get("on_false", transitions.get("on_false_step"))
@@ -302,6 +356,11 @@ class WorkflowEngine:
         result = ({"status": "cancelled", "task_id": task_id, "requested_count": len(steps),
                    "completed_count": 0, "failed_step": None}
                   if cancelled_before_start else self.run_steps(steps, task_id=task_id, execution_id=execution_id))
+        if (not cancelled_before_start
+                and self._is_low_battery_preempt_requested(execution_id)
+                and result.get("status") != "cancelled"):
+            result["status"] = "cancelled"
+            result["error"] = "LOW_BATTERY: mission interrupted at a safe step boundary."
         final_status = "cancelled" if result.get("status") == "cancelled" else "completed" if result.get("status") == "ok" else "failed"
         with self.lock:
             self.executions[execution_id] = {
@@ -314,6 +373,12 @@ class WorkflowEngine:
             }
         self._publish_execution(execution_id, final_status.upper(), result=result)
         self._report_completion(task_id, execution_id, result)
+        with self.lock:
+            queued_charge = self._queued_auto_charge if self.executions.get(execution_id, {}).get("low_battery_preempt_requested") else None
+            if queued_charge is not None:
+                self._queued_auto_charge = None
+        if queued_charge is not None:
+            self._start_workflow(queued_charge, allow_safe_queue=True)
 
     def _set_current_step(self, execution_id: str, step_def: Dict[str, Any]) -> None:
         step_type = str(step_def.get("type", "WAIT")).upper()
@@ -409,6 +474,10 @@ class WorkflowEngine:
             execution = self.executions.get(execution_id, {})
             return execution.get("status") == "cancelled"
 
+    def _is_low_battery_preempt_requested(self, execution_id: str) -> bool:
+        with self.lock:
+            return bool(self.executions.get(execution_id, {}).get("low_battery_preempt_requested"))
+
     def _submit_touch_event(self, event_type: str, data: Any) -> None:
         with self.lock:
             active = next((key for key, item in self.executions.items() if item.get("status") in {"accepted", "running"}), None)
@@ -425,6 +494,18 @@ class WorkflowEngine:
             step_type = str(definition.get("type", "")).upper()
             if step_type not in self.STEP_TYPES:
                 return f"Step {index + 1} has unsupported type '{step_type}'."
+            if "params" in definition:
+                if not isinstance(definition.get("params"), dict):
+                    return f"Step {index + 1} params must be an object."
+                for field in ("id", "name", "output_mapping", "transitions", "policy"):
+                    if field not in definition:
+                        return f"Step {index + 1} envelope is missing '{field}'."
+                if not isinstance(definition.get("output_mapping"), dict):
+                    return f"Step {index + 1} output_mapping must be an object."
+                if not isinstance(definition.get("transitions"), dict):
+                    return f"Step {index + 1} transitions must be an object."
+                if not isinstance(definition.get("policy"), dict):
+                    return f"Step {index + 1} policy must be an object."
             identifiers.append(str(definition.get("id", definition.get("name", index))))
         if len(set(identifiers)) != len(identifiers):
             return "Workflow step ids must be unique."
@@ -450,12 +531,15 @@ class WorkflowEngine:
                     return f"Step '{identifier}' transitions to unknown step '{target}'."
         return None
 
-    def _preflight(self, require_hardware: bool) -> Dict[str, Any]:
+    def _preflight(self, require_hardware: bool, allow_active_workflow: bool = False) -> Dict[str, Any]:
         runtime_id = str(os.getenv("LIBOT_RUNTIME_ID") or self.settings.get("runtime", {}).get("id", "real")).lower()
         checks: Dict[str, Any] = {"runtime_id": runtime_id}
         with self.lock:
-            if any(item.get("status") in {"accepted", "running"} for item in self.executions.values()):
+            active_workflow = any(item.get("status") in {"accepted", "running"} for item in self.executions.values())
+            if not allow_active_workflow and active_workflow:
                 return self._error("The robot is already running another workflow.", "PREFLIGHT_FAILED", checks=checks)
+        if allow_active_workflow:
+            checks["active_workflow"] = active_workflow
         if self.runtime_gateway is None or getattr(self.runtime_gateway, "_node", None) is None:
             return self._error("ROS/Nav2 runtime is unavailable.", "PREFLIGHT_FAILED", checks=checks)
         if getattr(self.runtime_gateway, "error", None):
@@ -498,6 +582,80 @@ class WorkflowEngine:
             checks["sensors"] = "simulated"
         return {"status": "ok", "checks": checks}
 
+    def _start_workflow(self, request: Dict[str, Any], allow_safe_queue: bool = False) -> Dict[str, Any]:
+        steps = request.get("steps")
+        if not isinstance(steps, list):
+            return self._error("start_workflow requires a steps array.")
+        validation_error = self._validate_steps(steps)
+        if validation_error:
+            return self._error(validation_error, "INVALID_WORKFLOW")
+        initial_context = request.get("initial_context", {})
+        if not isinstance(initial_context, dict):
+            return self._error("initial_context must be an object.")
+        runtime_id = str(request.get("runtime_id", "")).lower()
+        if allow_safe_queue and runtime_id != "real":
+            return self._error("Automatic charging is available only for the real runtime.")
+        execution_id = str(request.get("execution_id") or uuid.uuid4())
+
+        queued = False
+        with self.lock:
+            active = next(
+                ((active_id, item) for active_id, item in self.executions.items()
+                 if item.get("status") in {"accepted", "running"}),
+                None,
+            )
+            if active and allow_safe_queue:
+                active_id, active_execution = active
+                if active_execution.get("is_auto_charge"):
+                    return {"status": "accepted", "execution_id": active_id, "task_id": active_execution.get("task_id"), "already_charging": True}
+                if self._queued_auto_charge is not None:
+                    return self._error("A low-battery charging workflow is already queued.")
+                self._queued_auto_charge = dict(request)
+                active_execution["low_battery_preempt_requested"] = True
+                self.context.set("low_battery_preempt_requested", True)
+                self.executions[execution_id] = {
+                    "status": "queued",
+                    "task_id": request.get("task_id"),
+                    "mission_id": request.get("mission_id", request.get("task_id")),
+                    "runtime_id": runtime_id,
+                    "is_auto_charge": True,
+                }
+                queued = True
+            elif active:
+                return self._error("The robot is already running another workflow.")
+            else:
+                current = self.executions.get(execution_id)
+                if current and current.get("status") in {"accepted", "running"}:
+                    return self._error(f"Execution {execution_id} is already running.")
+                self.context = RobotContext()
+                self.context.update_variables(initial_context)
+                self.executions[execution_id] = {
+                    "status": "accepted",
+                    "task_id": request.get("task_id"),
+                    "mission_id": request.get("mission_id", request.get("task_id")),
+                    "runtime_id": request.get("runtime_id", self.context.get("runtime_id")),
+                    "assigned_book_id": initial_context.get("book_id"),
+                    "current_step": None,
+                    "current_step_name": None,
+                    "current_step_type": None,
+                    "expected_event_type": None,
+                    "allowed_values": [],
+                    "is_auto_charge": bool(allow_safe_queue),
+                }
+
+        if queued:
+            self._publish_execution(execution_id, "QUEUED", result={"message": "Waiting for the current safe step to finish.", "preemptedExecutionId": active[0]})
+            return {"status": "accepted", "execution_id": execution_id, "task_id": request.get("task_id"), "queued": True}
+
+        thread = threading.Thread(
+            target=self._run_execution,
+            args=(execution_id, steps, request.get("task_id")),
+            daemon=True,
+        )
+        self._publish_execution(execution_id, "ACCEPTED")
+        thread.start()
+        return {"status": "accepted", "execution_id": execution_id, "task_id": request.get("task_id")}
+
     def handle_request(self, request: Any) -> Dict[str, Any]:
         if isinstance(request, list):
             return self.run_steps(request)
@@ -516,7 +674,10 @@ class WorkflowEngine:
             }
 
         if command == "preflight_workflow":
-            return self._preflight(bool(request.get("require_hardware", False)))
+            return self._preflight(
+                bool(request.get("require_hardware", False)),
+                allow_active_workflow=bool(request.get("allow_active_workflow", False)),
+            )
 
         if command == "cancel_workflow":
             execution_id = str(request.get("execution_id", ""))
@@ -551,44 +712,9 @@ class WorkflowEngine:
                 task_id=request.get("task_id"),
             )
         if command == "start_workflow":
-            steps = request.get("steps")
-            if not isinstance(steps, list):
-                return self._error("start_workflow requires a steps array.")
-            validation_error = self._validate_steps(steps)
-            if validation_error:
-                return self._error(validation_error, "INVALID_WORKFLOW")
-            initial_context = request.get("initial_context", {})
-            if not isinstance(initial_context, dict):
-                return self._error("initial_context must be an object.")
-            execution_id = str(request.get("execution_id") or uuid.uuid4())
-            with self.lock:
-                if any(item.get("status") in {"accepted", "running"} for item in self.executions.values()):
-                    return self._error("The robot is already running another workflow.")
-                current = self.executions.get(execution_id)
-                if current and current.get("status") in {"accepted", "running"}:
-                    return self._error(f"Execution {execution_id} is already running.")
-                self.context = RobotContext()
-                self.context.update_variables(initial_context)
-                self.executions[execution_id] = {
-                    "status": "accepted",
-                    "task_id": request.get("task_id"),
-                    "mission_id": request.get("mission_id", request.get("task_id")),
-                    "runtime_id": request.get("runtime_id", self.context.get("runtime_id")),
-                    "assigned_book_id": initial_context.get("book_id"),
-                    "current_step": None,
-                    "current_step_name": None,
-                    "current_step_type": None,
-                    "expected_event_type": None,
-                    "allowed_values": [],
-                }
-            thread = threading.Thread(
-                target=self._run_execution,
-                args=(execution_id, steps, request.get("task_id")),
-                daemon=True,
-            )
-            self._publish_execution(execution_id, "ACCEPTED")
-            thread.start()
-            return {"status": "accepted", "execution_id": execution_id, "task_id": request.get("task_id")}
+            return self._start_workflow(request)
+        if command == "start_auto_charge":
+            return self._start_workflow(request, allow_safe_queue=True)
         if command == "run_step":
             step_def = request.get("step", request if "type" in request else None)
             if not isinstance(step_def, dict):
@@ -772,7 +898,18 @@ class WorkflowEngine:
         return result
 
     def _with_default_step_config(self, step_def: Dict[str, Any]) -> Dict[str, Any]:
-        enriched = dict(step_def)
+        if not isinstance(step_def, dict):
+            raise ValueError("Workflow step definition must be an object.")
+        if "params" in step_def:
+            params = step_def.get("params")
+            if not isinstance(params, dict):
+                raise ValueError("Workflow step params must be an object.")
+            enriched = dict(params)
+            for key in ("id", "name", "type", "output_mapping", "transitions", "policy"):
+                if key in step_def:
+                    enriched[key] = step_def[key]
+        else:
+            enriched = dict(step_def)
         step_type = str(enriched.get("type", "WAIT")).upper()
         hardware = self.settings.get("hardware", {})
 

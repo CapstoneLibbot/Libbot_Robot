@@ -15,6 +15,7 @@ class NotifyStep(BaseStep):
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         super().__init__(config)
         self.message = self.config.get("content", self.config.get("message", "Notification"))
+        self.payload = self.config.get("payload")
         self.channel = self.config.get("channel", "LOG")
         self.speaker = SpeakerController(self.config.get("speaker", {}))
 
@@ -38,6 +39,8 @@ class NotifyStep(BaseStep):
             "status": "notified",
             "type": "NOTIFY",
             "channel": self.channel,
+            "event_type": self.config.get("event_type"),
             "message": message,
+            "payload": self.resolve(context, self.payload),
             "delivery": delivery,
         }

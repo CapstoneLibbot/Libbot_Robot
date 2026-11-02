@@ -22,10 +22,12 @@ class WaitStep(BaseStep):
         self.result_variable = self.config.get("result_variable") or self.config.get("result")
         self.allowed_values = self.config.get("allowed_values")
         default_timeout = 30.0 if self.context_key else self.seconds
-        self.timeout_sec = self._read_float("timeout_sec", default_timeout)
+        configured_timeout = self.config.get("timeout_sec", default_timeout)
+        self.timeout_sec = None if configured_timeout is None else self._read_float("timeout_sec", default_timeout)
         self.poll_interval_sec = self._read_float("poll_interval_sec", 0.1)
         self.expected_value = self.config.get("expected_value")
         self.simulation_speed_provider = self.config.get("_simulation_speed_provider")
+        self.zone_action_checker = self.config.get("_zone_action_checker")
         self.ui_screen = self.config.get("ui_screen", "WAIT_FOR_TOUCH")
         self.prompt = self.config.get("prompt", "Choose an option to continue")
         self.ui = UIController(self.config.get("ui", {}), self.config.get("_event_callback"))
@@ -35,15 +37,34 @@ class WaitStep(BaseStep):
 
     def execute(self, context: RobotContext) -> Any:
         started_at = time.monotonic()
+        if callable(self.zone_action_checker):
+            try:
+                blocking_zone = self.zone_action_checker("WAIT")
+                if blocking_zone:
+                    payload = {
+                        "status": "error",
+                        "type": "WAIT",
+                        "message": f"WAIT/PAUSE is not allowed inside a {blocking_zone} zone.",
+                        "seconds": self.seconds,
+                        "timeout_sec": self.timeout_sec,
+                        "motion_stop_before": None,
+                        "motion_stop_after": None,
+                        "duration_ms": 0,
+                    }
+                    context.set("last_wait_result", payload)
+                    return payload
+            except (TypeError, ValueError):
+                pass
         stop_before = self.motion_safety.stop("wait_start") if self.stop_motion else None
 
         event_data = None
         if self.wait_for == "USER_TOUCH" and self.event_type:
-            self.ui.show_screen(self.ui_screen, {
-                "prompt": self.prompt,
-                "options": self.allowed_values or [],
-                "event_type": self.event_type,
-            }, event_type=str(self.event_type).upper())
+            if self.config.get("show_ui", True):
+                self.ui.show_screen(self.ui_screen, {
+                    "prompt": self.prompt,
+                    "options": self.allowed_values or [],
+                    "event_type": self.event_type,
+                }, event_type=str(self.event_type).upper())
             status, event_data = self._wait_for_event(context)
         elif self.context_key:
             status = self._wait_for_context(context)
@@ -72,9 +93,9 @@ class WaitStep(BaseStep):
         return payload
 
     def _wait_for_event(self, context: RobotContext) -> tuple[str, Any]:
-        deadline = time.monotonic() + max(self.timeout_sec, 0.0)
-        while time.monotonic() <= deadline:
-            if context.get("workflow_cancelled", False):
+        deadline = None if self.timeout_sec is None else time.monotonic() + max(self.timeout_sec, 0.0)
+        while deadline is None or time.monotonic() <= deadline:
+            if context.get("workflow_cancelled", False) or context.get("low_battery_preempt_requested", False):
                 return "cancelled", None
             value = context.pop_event(str(self.event_type))
             if value is not None:

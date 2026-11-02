@@ -21,7 +21,12 @@ def generate_launch_description():
         DeclareLaunchArgument("map", default_value="/ros2_ws/maps/library_sim.yaml"),
         DeclareLaunchArgument("backend_url", default_value="http://127.0.0.1:5205"),
         DeclareLaunchArgument("use_rviz", default_value="false"),
-        IncludeLaunchDescription(PythonLaunchDescriptionSource(simulation)),
+        DeclareLaunchArgument("headless", default_value="true"),
+        DeclareLaunchArgument("autostart_navigation", default_value="false"),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(simulation),
+            launch_arguments={"headless": LaunchConfiguration("headless")}.items(),
+        ),
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
@@ -38,7 +43,15 @@ def generate_launch_description():
         ),
         TimerAction(period=4.0, actions=[IncludeLaunchDescription(
             PythonLaunchDescriptionSource(navigation),
-            launch_arguments={"map": LaunchConfiguration("map"), "use_sim_time": "true", "amcl_tf_broadcast": "false", "use_hardware": "false", "use_rviz": LaunchConfiguration("use_rviz"), "start_workflow_app": "false"}.items(),
+            launch_arguments={
+                "map": LaunchConfiguration("map"),
+                "use_sim_time": "true",
+                "amcl_tf_broadcast": "false",
+                "use_hardware": "false",
+                "use_rviz": LaunchConfiguration("use_rviz"),
+                "start_workflow_app": "false",
+                "autostart_navigation": LaunchConfiguration("autostart_navigation"),
+            }.items(),
         )]),
         ExecuteProcess(
             cmd=["python3", "/ros2_ws/robot_app/main.py"],

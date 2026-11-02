@@ -27,6 +27,8 @@ class MoveStep(BaseStep):
         self.timeout_sec = self._extract_optional_int(self.config.get("timeout_sec"))
         self.path_id = self.config.get("path_id")
         self.navigation = NavigationController()
+        self.zone_action_checker = self.config.get("_zone_action_checker")
+        self.runtime_gateway = self.config.get("_runtime_gateway")
 
     def _normalize_enum(self, value: Any, default: str) -> str:
         if value is None:
@@ -139,9 +141,6 @@ class MoveStep(BaseStep):
         return None
 
     def _resolve_goal(self, context: RobotContext) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-        if self.path_id is not None:
-            return None, "MOVE path_id requires a route resolver; use a resolved target pose instead."
-
         target = self._resolve_target(context)
         if target is None:
             return None, "No valid endpoint_id, target, or path_id was provided for the move step."
@@ -167,9 +166,9 @@ class MoveStep(BaseStep):
             }
             if destination.get("endpoint_id") is not None:
                 target_pose["endpoint_id"] = destination["endpoint_id"]
-            return {"target": target_pose, "path_id": None}, None
+            return {"target": target_pose, "path_id": self.resolve(context, self.path_id)}, None
 
-        return {"target": {"endpoint_id": destination["endpoint_id"]}, "path_id": None}, None
+        return {"target": {"endpoint_id": destination["endpoint_id"]}, "path_id": self.resolve(context, self.path_id)}, None
 
     def _validate_navigation_options(self) -> Optional[str]:
         if self.speed_mode not in self.SPEED_MODES:
@@ -199,6 +198,8 @@ class MoveStep(BaseStep):
             "scan_while_moving": self.scan_while_moving,
             "timeout_sec": self.timeout_sec,
             "current_pose": current_pose,
+            "observations": [],
+            "actual_distance_m": 0.0,
         }
 
     def execute(self, context: RobotContext) -> Any:
@@ -212,6 +213,16 @@ class MoveStep(BaseStep):
             return self._error_payload(context, goal_error or "Invalid navigation goal.")
 
         requested_target = resolved_goal.get("target") or {"path_id": resolved_goal.get("path_id")}
+        if callable(self.zone_action_checker) and isinstance(requested_target, dict):
+            try:
+                blocking_zone = self.zone_action_checker("GOAL", requested_target)
+                if blocking_zone:
+                    return self._error_payload(
+                        context,
+                        f"Navigation target is inside a {blocking_zone} zone.",
+                    )
+            except (TypeError, ValueError):
+                pass
         goal = {
             "target": resolved_goal.get("target"),
             "path_id": resolved_goal.get("path_id"),
@@ -221,10 +232,25 @@ class MoveStep(BaseStep):
             "timeout_sec": self.timeout_sec,
             "current_pose": current_pose,
         }
-        nav_result = self.navigation.navigate(goal)
+        capture_started = False
+        if self.scan_while_moving and self.runtime_gateway is not None:
+            begin_capture = getattr(self.runtime_gateway, "begin_patrol_capture", None)
+            if callable(begin_capture):
+                begin_capture()
+                capture_started = True
+        try:
+            nav_result = self.navigation.navigate(goal)
+        finally:
+            capture = {"observations": [], "actual_distance_m": 0.0}
+            if capture_started:
+                finish_capture = getattr(self.runtime_gateway, "finish_patrol_capture", None)
+                if callable(finish_capture):
+                    capture = finish_capture()
 
         move_status = nav_result.get("move_status", "FAILED")
         final_pose = nav_result.get("final_pose")
+        if final_pose is None and self.runtime_gateway is not None:
+            final_pose = dict(getattr(self.runtime_gateway, "pose", {}) or {}) or None
         nav2_result_code = nav_result.get("nav2_result_code")
         duration_ms = nav_result.get("duration_ms")
         obstacle_info = nav_result.get("obstacle_info")
@@ -248,10 +274,12 @@ class MoveStep(BaseStep):
             "obstacle_info": obstacle_info,
             "speed_mode": self.speed_mode,
             "obstacle_policy": self.obstacle_policy,
-            "path_id": self.path_id,
+            "path_id": resolved_goal.get("path_id"),
             "scan_while_moving": self.scan_while_moving,
             "timeout_sec": self.timeout_sec,
             "current_pose": current_pose,
+            "observations": capture.get("observations", []),
+            "actual_distance_m": float(capture.get("actual_distance_m", 0.0) or 0.0),
         }
         if message:
             result["message"] = message
