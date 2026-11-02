@@ -28,17 +28,17 @@ class EvaluateStep(BaseStep):
             evaluation = left != right
         elif self.operator == "IN":
             evaluation = left in right if isinstance(right, (list, tuple, set, dict, str)) else False
-        elif self.operator == "LESS_THAN_OR_EQUAL":
+        elif self.operator in {"LESS_THAN_OR_EQUAL", "GREATER_THAN"}:
             if isinstance(left, bool) or isinstance(right, bool):
-                return {"status": "error", "type": "EVALUATE", "message": "LESS_THAN_OR_EQUAL requires numeric values."}
+                return {"status": "error", "type": "EVALUATE", "message": f"{self.operator} requires numeric values."}
             try:
                 left_number = float(left)
                 right_number = float(right)
             except (TypeError, ValueError, OverflowError):
-                return {"status": "error", "type": "EVALUATE", "message": "LESS_THAN_OR_EQUAL requires numeric values."}
+                return {"status": "error", "type": "EVALUATE", "message": f"{self.operator} requires numeric values."}
             if not math.isfinite(left_number) or not math.isfinite(right_number):
-                return {"status": "error", "type": "EVALUATE", "message": "LESS_THAN_OR_EQUAL requires finite numeric values."}
-            evaluation = left_number <= right_number
+                return {"status": "error", "type": "EVALUATE", "message": f"{self.operator} requires finite numeric values."}
+            evaluation = left_number <= right_number if self.operator == "LESS_THAN_OR_EQUAL" else left_number > right_number
         else:
             return {"status": "error", "type": "EVALUATE", "message": f"Unsupported operator: {self.operator}"}
         context.set("last_evaluation", evaluation)

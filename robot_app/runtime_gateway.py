@@ -174,6 +174,10 @@ class RobotRuntimeGateway:
         self._resume_navigation_after_manual_stop = False
         self._patrol_observation_condition = threading.Condition(self._lock)
         self._patrol_observation: Optional[Any] = None
+        self._patrol_capture_active = False
+        self._patrol_capture_observations: list[Any] = []
+        self._patrol_capture_distance_m = 0.0
+        self._patrol_capture_last_xy: Optional[tuple[float, float]] = None
 
     def start(self) -> None:
         try:
@@ -288,6 +292,24 @@ class RobotRuntimeGateway:
             self._patrol_observation = None
             return observation
 
+    def begin_patrol_capture(self) -> None:
+        with self._lock:
+            self._patrol_capture_active = True
+            self._patrol_capture_observations = []
+            self._patrol_capture_distance_m = 0.0
+            self._patrol_capture_last_xy = (float(self.pose["x"]), float(self.pose["y"]))
+
+    def finish_patrol_capture(self) -> Dict[str, Any]:
+        with self._lock:
+            result = {
+                "observations": list(self._patrol_capture_observations),
+                "actual_distance_m": float(self._patrol_capture_distance_m),
+            }
+            self._patrol_capture_active = False
+            self._patrol_capture_observations = []
+            self._patrol_capture_last_xy = None
+            return result
+
     def cancel_active_navigation(self) -> None:
         with self._lock:
             goal_handle = self._goal_handle
@@ -317,6 +339,8 @@ class RobotRuntimeGateway:
             observation = {"type": "WARNING", "description": str(getattr(message, "data", ""))}
         with self._patrol_observation_condition:
             self._patrol_observation = observation
+            if self._patrol_capture_active:
+                self._patrol_capture_observations.append(observation)
             self._patrol_observation_condition.notify_all()
 
     def handle_request(self, payload: Any) -> Optional[Dict[str, Any]]:
@@ -2179,6 +2203,7 @@ class RobotRuntimeGateway:
             return
         with self._lock:
             self.pose = pose
+            self._record_patrol_pose_locked(pose)
             if self.runtime_id == "sim":
                 self.localization_state = "LOCALIZED"
             if (
@@ -2198,6 +2223,20 @@ class RobotRuntimeGateway:
                 "linearY": float(twist.linear.y),
                 "angularZ": float(twist.angular.z),
             }
+
+    def _record_patrol_pose_locked(self, pose: Dict[str, Any]) -> None:
+        if not self._patrol_capture_active:
+            return
+        try:
+            current = (float(pose["x"]), float(pose["y"]))
+        except (KeyError, TypeError, ValueError):
+            return
+        previous = self._patrol_capture_last_xy
+        if previous is not None:
+            distance = math.hypot(current[0] - previous[0], current[1] - previous[1])
+            if math.isfinite(distance):
+                self._patrol_capture_distance_m += distance
+        self._patrol_capture_last_xy = current
 
     def _on_map(self, message: Any) -> None:
         orientation = message.info.origin.orientation
