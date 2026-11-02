@@ -79,7 +79,8 @@ controller_server:
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
-    failure_tolerance: 0.3
+    # Allow short controller/costmap hiccups to recover before FollowPath aborts.
+    failure_tolerance: 1.5
     publish_zero_velocity: true
     progress_checker_plugins:
     - progress_checker
@@ -109,7 +110,9 @@ controller_server:
       min_lookahead_dist: 0.20
       max_lookahead_dist: 0.60
       lookahead_time: 1.5
-      rotate_to_heading_angular_vel: 0.35
+      # Pure in-place turns: 0.8 rad/s stays below the STM32's 300 mm/s
+      # wheel-speed cap for the configured 0.30 m mecanum lever arm.
+      rotate_to_heading_angular_vel: 0.8
       transform_tolerance: 0.2
       use_velocity_scaled_lookahead_dist: true
       min_approach_linear_velocity: 0.05
@@ -121,7 +124,7 @@ controller_server:
       regulated_linear_scaling_min_radius: 0.7
       regulated_linear_scaling_min_speed: 0.05
       use_rotate_to_heading: true
-      rotate_to_heading_min_angle: 0.785
+      rotate_to_heading_min_angle: 0.524
       max_angular_accel: 4.0
       allow_reversing: false
 local_costmap:
@@ -256,9 +259,9 @@ behavior_server:
     robot_base_frame: base_footprint
     transform_tolerance: 0.1
     simulate_ahead_time: 2.0
-    max_rotational_vel: 0.5
-    min_rotational_vel: 0.15
-    rotational_acc_lim: 1.0
+    max_rotational_vel: 0.8
+    min_rotational_vel: 0.2
+    rotational_acc_lim: 2.0
 waypoint_follower:
   ros__parameters:
     loop_rate: 20
