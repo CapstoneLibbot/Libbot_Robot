@@ -383,11 +383,7 @@ class Nav2StabilityTests(unittest.TestCase):
 
 
 class Nav2ConfigurationTests(unittest.TestCase):
-<<<<<<< HEAD
-    def test_custom_behavior_trees_replan_while_following_with_limited_recovery(self):
-=======
     def test_custom_behavior_trees_replan_and_recover_without_spinning(self):
->>>>>>> f236e02c364e3c1ee4ee1368fe94efab293caacb
         for name, compute_tag, goal_input in (
             ("navigate_to_pose.xml", "ComputePathToPose", "goal"),
             ("navigate_through_poses.xml", "ComputePathThroughPoses", "goals"),
@@ -395,13 +391,14 @@ class Nav2ConfigurationTests(unittest.TestCase):
             with self.subTest(tree=name):
                 root = ET.parse(BRINGUP / "behavior_trees" / name).getroot()
                 self.assertEqual(root.attrib["BTCPP_format"], "4")
-                self.assertEqual(len(root.findall(f".//{compute_tag}")), 1)
+                computes = root.findall(f".//{compute_tag}")
+                self.assertEqual(len(computes), 2)
                 self.assertEqual(len(root.findall(".//FollowPath")), 1)
                 self.assertEqual(len(root.findall(".//PipelineSequence")), 1)
                 rate_controller = root.find(".//PipelineSequence/RateController")
                 self.assertIsNotNone(rate_controller)
                 self.assertEqual(rate_controller.attrib["hz"], "1.0")
-                compute = root.find(".//" + compute_tag)
+                compute = computes[0]
                 follow = root.find(".//FollowPath")
                 self.assertEqual(compute.attrib[goal_input], "{" + goal_input + "}")
                 self.assertEqual(compute.attrib["error_code_id"], "{compute_path_error_code}")
@@ -410,10 +407,6 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertIsNotNone(recovery)
                 self.assertEqual(recovery.attrib["number_of_retries"], "6")
                 tags = [element.tag for element in root.iter()]
-<<<<<<< HEAD
-                for forbidden in ("Spin", "BackUp"):
-                    self.assertNotIn(forbidden, tags)
-=======
                 self.assertIn("PipelineSequence", tags)
                 self.assertIn("RateController", tags)
                 self.assertIn("BackUp", tags)
@@ -430,12 +423,16 @@ class Nav2ConfigurationTests(unittest.TestCase):
                     self.assertEqual(backup.attrib["time_allowance"], "5.0")
                     self.assertNotIn("disable_collision_checks", backup.attrib)
                 controller_recovery = root.find(
-                    ".//Sequence[@name='BackUpOnControllerFailure']"
+                    ".//Sequence[@name='BackUpAndReplanOnControllerFailure']"
                 )
                 self.assertIsNotNone(controller_recovery)
                 self.assertIsNotNone(controller_recovery.find("BackUp"))
->>>>>>> f236e02c364e3c1ee4ee1368fe94efab293caacb
-                self.assertEqual(len(root.findall(".//Wait")), 1)
+                self.assertIsNotNone(controller_recovery.find("Wait"))
+                forced_replan = controller_recovery.find(compute_tag)
+                self.assertIsNotNone(forced_replan)
+                self.assertEqual(forced_replan.attrib[goal_input], "{" + goal_input + "}")
+                self.assertEqual(forced_replan.attrib["path"], "{path}")
+                self.assertEqual(len(root.findall(".//Wait")), 2)
                 self.assertEqual(len(root.findall(".//WouldAPlannerRecoveryHelp")), 2)
                 self.assertEqual(len(root.findall(".//WouldAControllerRecoveryHelp")), 2)
                 costmap_services = {
@@ -448,7 +445,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 })
                 self.assertEqual(
                     [node.attrib["wait_duration"] for node in root.findall(".//Wait")],
-                    ["2.0"],
+                    ["0.5", "2.0"],
                 )
 
     def test_launch_uses_installed_trees_and_holds_navigation_lifecycle(self):
@@ -472,11 +469,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
             config,
         )
 
-<<<<<<< HEAD
-    def test_nav2_tuning_matches_conservative_motion_policy(self):
-=======
     def test_nav2_tuning_matches_replanning_motion_policy(self):
->>>>>>> f236e02c364e3c1ee4ee1368fe94efab293caacb
         config = (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
         expected = (
             "publish_zero_velocity: true",
