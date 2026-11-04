@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import yaml
+
 from runtime_gateway import RobotRuntimeGateway
 
 
@@ -381,7 +383,11 @@ class Nav2StabilityTests(unittest.TestCase):
 
 
 class Nav2ConfigurationTests(unittest.TestCase):
+<<<<<<< HEAD
     def test_custom_behavior_trees_replan_while_following_with_limited_recovery(self):
+=======
+    def test_custom_behavior_trees_replan_and_recover_without_spinning(self):
+>>>>>>> f236e02c364e3c1ee4ee1368fe94efab293caacb
         for name, compute_tag, goal_input in (
             ("navigate_to_pose.xml", "ComputePathToPose", "goal"),
             ("navigate_through_poses.xml", "ComputePathThroughPoses", "goals"),
@@ -400,12 +406,38 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertEqual(compute.attrib[goal_input], "{" + goal_input + "}")
                 self.assertEqual(compute.attrib["error_code_id"], "{compute_path_error_code}")
                 self.assertEqual(follow.attrib["error_code_id"], "{follow_path_error_code}")
-                recovery = root.find(".//RecoveryNode")
-                self.assertEqual(recovery.attrib["number_of_retries"], "2")
+                recovery = root.find("./BehaviorTree/RecoveryNode")
+                self.assertIsNotNone(recovery)
+                self.assertEqual(recovery.attrib["number_of_retries"], "6")
                 tags = [element.tag for element in root.iter()]
+<<<<<<< HEAD
                 for forbidden in ("Spin", "BackUp"):
                     self.assertNotIn(forbidden, tags)
+=======
+                self.assertIn("PipelineSequence", tags)
+                self.assertIn("RateController", tags)
+                self.assertIn("BackUp", tags)
+                self.assertNotIn("SequenceWithMemory", tags)
+                self.assertNotIn("Spin", tags)
+                rate = root.find(".//RateController")
+                self.assertIsNotNone(rate)
+                self.assertEqual(rate.attrib["hz"], "1.0")
+                backups = root.findall(".//BackUp")
+                self.assertEqual(len(backups), 2)
+                for backup in backups:
+                    self.assertEqual(backup.attrib["backup_dist"], "0.15")
+                    self.assertEqual(backup.attrib["backup_speed"], "0.08")
+                    self.assertEqual(backup.attrib["time_allowance"], "5.0")
+                    self.assertNotIn("disable_collision_checks", backup.attrib)
+                controller_recovery = root.find(
+                    ".//Sequence[@name='BackUpOnControllerFailure']"
+                )
+                self.assertIsNotNone(controller_recovery)
+                self.assertIsNotNone(controller_recovery.find("BackUp"))
+>>>>>>> f236e02c364e3c1ee4ee1368fe94efab293caacb
                 self.assertEqual(len(root.findall(".//Wait")), 1)
+                self.assertEqual(len(root.findall(".//WouldAPlannerRecoveryHelp")), 2)
+                self.assertEqual(len(root.findall(".//WouldAControllerRecoveryHelp")), 2)
                 costmap_services = {
                     node.attrib.get("service_name")
                     for node in root.findall(".//ClearEntireCostmap")
@@ -416,7 +448,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 })
                 self.assertEqual(
                     [node.attrib["wait_duration"] for node in root.findall(".//Wait")],
-                    ["1.0"],
+                    ["2.0"],
                 )
 
     def test_launch_uses_installed_trees_and_holds_navigation_lifecycle(self):
@@ -424,7 +456,8 @@ class Nav2ConfigurationTests(unittest.TestCase):
         cmake = (BRINGUP / "CMakeLists.txt").read_text(encoding="utf-8")
         self.assertIn('"behavior_trees", "navigate_to_pose.xml"', launch)
         self.assertIn('"behavior_trees", "navigate_through_poses.xml"', launch)
-        self.assertIn('"autostart": False', launch)
+        self.assertIn('LaunchConfiguration("autostart_navigation")', launch)
+        self.assertIn('"autostart": ParameterValue(', launch)
         self.assertIn('"bt_navigator"', launch)
         self.assertIn("DIRECTORY launch config behavior_trees", cmake)
         config = (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
@@ -439,15 +472,19 @@ class Nav2ConfigurationTests(unittest.TestCase):
             config,
         )
 
+<<<<<<< HEAD
     def test_nav2_tuning_matches_conservative_motion_policy(self):
+=======
+    def test_nav2_tuning_matches_replanning_motion_policy(self):
+>>>>>>> f236e02c364e3c1ee4ee1368fe94efab293caacb
         config = (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
         expected = (
             "publish_zero_velocity: true",
             "plugin: nav2_controller::PoseProgressChecker",
             "required_movement_radius: 0.05",
             "required_movement_angle: 0.10",
-            "movement_time_allowance: 30.0",
-            "failure_tolerance: 1.5",
+            "movement_time_allowance: 10.0",
+            "failure_tolerance: 3.0",
             "stateful: true",
             "xy_goal_tolerance: 0.10",
             "yaw_goal_tolerance: 0.20",
@@ -465,8 +502,46 @@ class Nav2ConfigurationTests(unittest.TestCase):
             with self.subTest(setting=value):
                 self.assertIn(value, config)
         behavior_config = config.split("behavior_server:", 1)[1].split("waypoint_follower:", 1)[0]
+        self.assertIn("- backup", behavior_config)
         self.assertIn("- wait", behavior_config)
-        self.assertNotRegex(behavior_config, r"(?m)^\s*-\s*(spin|backup)\s*$")
+        self.assertIn("plugin: nav2_behaviors::BackUp", behavior_config)
+        self.assertNotRegex(behavior_config, r"(?m)^\s*-\s*spin\s*$")
+
+    def test_sonar_range_layer_marks_local_and_global_costmaps(self):
+        config = yaml.safe_load(
+            (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
+        )
+        expected_topics = [
+            "/range/front",
+            "/range/left",
+            "/range/right",
+            "/range/rear",
+        ]
+        expected_plugins = {
+            "local_costmap": ["obstacle_layer", "range_layer", "inflation_layer"],
+            "global_costmap": [
+                "static_layer",
+                "obstacle_layer",
+                "range_layer",
+                "inflation_layer",
+            ],
+        }
+
+        for costmap_name, plugins in expected_plugins.items():
+            with self.subTest(costmap=costmap_name):
+                params = config[costmap_name][costmap_name]["ros__parameters"]
+                self.assertEqual(params["plugins"], plugins)
+                layer = params["range_layer"]
+                self.assertEqual(
+                    layer["plugin"], "nav2_costmap_2d::RangeSensorLayer"
+                )
+                self.assertTrue(layer["enabled"])
+                self.assertEqual(layer["topics"], expected_topics)
+                self.assertEqual(layer["input_sensor_type"], "VARIABLE")
+                self.assertTrue(layer["clear_on_max_reading"])
+                self.assertEqual(layer["clear_threshold"], 0.2)
+                self.assertEqual(layer["mark_threshold"], 0.8)
+                self.assertEqual(layer["no_readings_timeout"], 0.0)
 
 
 if __name__ == "__main__":
