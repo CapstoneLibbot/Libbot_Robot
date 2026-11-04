@@ -2,12 +2,17 @@
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
     <RecoveryNode number_of_retries="2" name="NavigateThroughPosesRecovery">
-      <SequenceWithMemory name="ComputeAndFollowPath">
-        <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"
-                                 error_code_id="{compute_path_error_code}"/>
+      <PipelineSequence name="NavigateWithReplanning">
+        <RateController hz="1.0">
+          <ReactiveSequence>
+            <RemovePassedGoals input_goals="{goals}" output_goals="{goals}" radius="0.7"/>
+            <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"
+                                     error_code_id="{compute_path_error_code}"/>
+          </ReactiveSequence>
+        </RateController>
         <FollowPath path="{path}" controller_id="FollowPath"
                     error_code_id="{follow_path_error_code}"/>
-      </SequenceWithMemory>
+      </PipelineSequence>
       <SequenceWithMemory name="ClearAndWaitBeforeRetry">
         <ClearEntireCostmap name="ClearLocalCostmap" service_name="local_costmap/clear_entirely_local_costmap" server_timeout="5000"/>
         <ClearEntireCostmap name="ClearGlobalCostmap" service_name="global_costmap/clear_entirely_global_costmap" server_timeout="5000"/>
