@@ -410,12 +410,18 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 rate = root.find(".//RateController")
                 self.assertIsNotNone(rate)
                 self.assertEqual(rate.attrib["hz"], "1.0")
-                backup = root.find(".//BackUp")
-                self.assertIsNotNone(backup)
-                self.assertEqual(backup.attrib["backup_dist"], "0.15")
-                self.assertEqual(backup.attrib["backup_speed"], "0.08")
-                self.assertEqual(backup.attrib["time_allowance"], "5.0")
-                self.assertNotIn("disable_collision_checks", backup.attrib)
+                backups = root.findall(".//BackUp")
+                self.assertEqual(len(backups), 2)
+                for backup in backups:
+                    self.assertEqual(backup.attrib["backup_dist"], "0.15")
+                    self.assertEqual(backup.attrib["backup_speed"], "0.08")
+                    self.assertEqual(backup.attrib["time_allowance"], "5.0")
+                    self.assertNotIn("disable_collision_checks", backup.attrib)
+                controller_recovery = root.find(
+                    ".//Sequence[@name='BackUpOnControllerFailure']"
+                )
+                self.assertIsNotNone(controller_recovery)
+                self.assertIsNotNone(controller_recovery.find("BackUp"))
                 self.assertEqual(len(root.findall(".//Wait")), 1)
                 self.assertEqual(len(root.findall(".//WouldAPlannerRecoveryHelp")), 2)
                 self.assertEqual(len(root.findall(".//WouldAControllerRecoveryHelp")), 2)
@@ -460,7 +466,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
             "plugin: nav2_controller::PoseProgressChecker",
             "required_movement_radius: 0.05",
             "required_movement_angle: 0.10",
-            "movement_time_allowance: 30.0",
+            "movement_time_allowance: 10.0",
             "failure_tolerance: 3.0",
             "stateful: true",
             "xy_goal_tolerance: 0.10",

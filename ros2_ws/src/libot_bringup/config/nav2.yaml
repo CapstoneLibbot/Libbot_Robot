@@ -97,7 +97,9 @@ controller_server:
       plugin: nav2_controller::PoseProgressChecker
       required_movement_radius: 0.05
       required_movement_angle: 0.10
-      movement_time_allowance: 30.0
+      # Trigger controller recovery promptly when a new obstacle leaves the
+      # robot stationary. Rotation still counts as progress with this checker.
+      movement_time_allowance: 10.0
     general_goal_checker:
       stateful: true
       plugin: nav2_controller::SimpleGoalChecker

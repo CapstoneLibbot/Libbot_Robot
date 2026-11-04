@@ -18,11 +18,13 @@
         <RecoveryNode number_of_retries="1" name="FollowPath">
           <FollowPath path="{path}" controller_id="FollowPath"
                       error_code_id="{follow_path_error_code}"/>
-          <Sequence name="ClearLocalCostmapOnControllerFailure">
+          <Sequence name="BackUpOnControllerFailure">
             <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
             <ClearEntireCostmap name="ClearLocalCostmapContext"
                                 service_name="local_costmap/clear_entirely_local_costmap"
                                 server_timeout="5000"/>
+            <BackUp backup_dist="0.15" backup_speed="0.08"
+                    time_allowance="5.0"/>
           </Sequence>
         </RecoveryNode>
       </PipelineSequence>
