@@ -415,7 +415,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertEqual(backup.attrib["backup_dist"], "0.15")
                 self.assertEqual(backup.attrib["backup_speed"], "0.08")
                 self.assertEqual(backup.attrib["time_allowance"], "5.0")
-                self.assertEqual(backup.attrib["disable_collision_checks"], "false")
+                self.assertNotIn("disable_collision_checks", backup.attrib)
                 self.assertEqual(len(root.findall(".//Wait")), 1)
                 self.assertEqual(len(root.findall(".//WouldAPlannerRecoveryHelp")), 2)
                 self.assertEqual(len(root.findall(".//WouldAControllerRecoveryHelp")), 2)

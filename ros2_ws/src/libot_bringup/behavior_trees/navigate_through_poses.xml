@@ -44,7 +44,7 @@
             </Sequence>
             <Wait wait_duration="2.0"/>
             <BackUp backup_dist="0.15" backup_speed="0.08"
-                    time_allowance="5.0" disable_collision_checks="false"/>
+                    time_allowance="5.0"/>
           </RoundRobin>
         </ReactiveFallback>
       </Sequence>
