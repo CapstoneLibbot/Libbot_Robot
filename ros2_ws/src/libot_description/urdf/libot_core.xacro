@@ -13,9 +13,9 @@
 
     <link name="base_footprint"/>
     <link name="base_link">
-      <visual><origin xyz="0 0 0.16"/><geometry><box size="0.50 0.40 0.30"/></geometry><material name="libot_blue"/></visual>
-      <collision><origin xyz="0 0 0.16"/><geometry><box size="0.50 0.40 0.30"/></geometry></collision>
-      <inertial><origin xyz="0 0 0.16"/><mass value="18"/><xacro:box_inertia mass="18" x="0.50" y="0.40" z="0.30"/></inertial>
+      <visual><origin xyz="0 0 0.16"/><geometry><box size="0.30 0.30 0.30"/></geometry><material name="libot_blue"/></visual>
+      <collision><origin xyz="0 0 0.16"/><geometry><box size="0.30 0.30 0.30"/></geometry></collision>
+      <inertial><origin xyz="0 0 0.16"/><mass value="18"/><xacro:box_inertia mass="18" x="0.30" y="0.30" z="0.30"/></inertial>
     </link>
     <joint name="base_footprint_to_base_link" type="fixed"><parent link="base_footprint"/><child link="base_link"/><origin xyz="0 0 0.05"/></joint>
 
