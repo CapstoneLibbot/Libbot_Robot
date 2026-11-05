@@ -7,9 +7,11 @@ import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Twist, TransformStamped
 from nav_msgs.msg import Odometry
-from sensor_msgs.msg import BatteryState
+from sensor_msgs.msg import BatteryState, Imu, Range
 from std_msgs.msg import String
 from tf2_ros import TransformBroadcaster
+
+from libbot_stm32.protocol import parse_imu_line, parse_range_line
 
 
 class STM32Bridge(Node):
@@ -58,6 +60,13 @@ class STM32Bridge(Node):
         self.status_pub = self.create_publisher(String, '/stm32_bridge/status', 10)
         self.odom_pub = self.create_publisher(Odometry, '/odom', 20)
         self.battery_pub = self.create_publisher(BatteryState, '/battery_state', 10)
+        self.imu_pub = self.create_publisher(Imu, '/imu/data', 20)
+        self.range_publishers = {
+            'front': self.create_publisher(Range, '/range/front', 10),
+            'left': self.create_publisher(Range, '/range/left', 10),
+            'right': self.create_publisher(Range, '/range/right', 10),
+            'rear': self.create_publisher(Range, '/range/rear', 10),
+        }
         self.tf_broadcaster = TransformBroadcaster(self)
 
         self.x = 0.0
@@ -78,6 +87,8 @@ class STM32Bridge(Node):
         self.last_encoder_timeout_logged = False
         self.last_serial_error_logged = 0.0
         self.last_velocity_ack_logged = 0.0
+        self.last_imu_calibration = None
+        self.last_blocked_mask = None
 
         self.serial_timer = self.create_timer(0.005, self.serial_callback)
         self.odom_timer = self.create_timer(0.02, self.publish_odom)
@@ -169,6 +180,12 @@ class STM32Bridge(Node):
                     self.process_encoder(line)
                 elif line.startswith('BAT,'):
                     self.process_battery(line)
+                elif line.startswith('IMU,'):
+                    self.process_imu(line)
+                elif line.startswith('RNG,'):
+                    self.process_ranges(line)
+                elif line.startswith('SAFE,'):
+                    self.process_safety(line)
                 elif line.startswith('LiBot STM32 READY'):
                     self.get_logger().info(line)
                     self.publish_status('STM32_READY')
@@ -236,6 +253,102 @@ class STM32Bridge(Node):
             self.battery_pub.publish(msg)
         except (ValueError, OverflowError) as exc:
             self.get_logger().warning(f'Battery parse error: {exc}')
+
+    def process_imu(self, line):
+        try:
+            values = parse_imu_line(line)
+            qw, qx, qy, qz = (value / 16384.0 for value in values[0:4])
+            norm = math.sqrt(qw * qw + qx * qx + qy * qy + qz * qz)
+            if not 0.5 <= norm <= 1.5:
+                raise ValueError(f'invalid quaternion norm {norm:.3f}')
+            qw, qx, qy, qz = (value / norm for value in (qw, qx, qy, qz))
+        except (ValueError, OverflowError) as exc:
+            self.get_logger().warning(f'IMU parse error: {exc}')
+            return
+
+        calibration = values[10:14]
+        calibrated = (
+            calibration[0] >= 2
+            and calibration[1] >= 2
+            and calibration[3] >= 2
+        )
+        msg = Imu()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'imu_link'
+        msg.orientation.w = qw
+        msg.orientation.x = qx
+        msg.orientation.y = qy
+        msg.orientation.z = qz
+        msg.angular_velocity.x = values[4] / 1000.0
+        msg.angular_velocity.y = values[5] / 1000.0
+        msg.angular_velocity.z = values[6] / 1000.0
+        msg.linear_acceleration.x = values[7] / 1000.0
+        msg.linear_acceleration.y = values[8] / 1000.0
+        msg.linear_acceleration.z = values[9] / 1000.0
+
+        orientation_variance = 0.03 if calibrated else 1.0
+        msg.orientation_covariance = [
+            orientation_variance, 0.0, 0.0,
+            0.0, orientation_variance, 0.0,
+            0.0, 0.0, orientation_variance,
+        ]
+        msg.angular_velocity_covariance = [
+            0.02, 0.0, 0.0,
+            0.0, 0.02, 0.0,
+            0.0, 0.0, 0.02,
+        ]
+        msg.linear_acceleration_covariance = [
+            0.2, 0.0, 0.0,
+            0.0, 0.2, 0.0,
+            0.0, 0.0, 0.2,
+        ]
+        self.imu_pub.publish(msg)
+
+        if calibration != self.last_imu_calibration:
+            self.last_imu_calibration = calibration
+            status = 'IMU_CAL,' + ','.join(str(value) for value in calibration)
+            self.publish_status(status)
+            self.get_logger().info(status)
+
+    def process_ranges(self, line):
+        try:
+            distances, valid_mask, blocked_mask = parse_range_line(line)
+        except (ValueError, OverflowError) as exc:
+            self.get_logger().warning(f'Range parse error: {exc}')
+            return
+
+        stamp = self.get_clock().now().to_msg()
+        names = ('front', 'left', 'right', 'rear')
+        for index, name in enumerate(names):
+            msg = Range()
+            msg.header.stamp = stamp
+            msg.header.frame_id = f'ultrasonic_{name}_link'
+            msg.radiation_type = Range.ULTRASOUND
+            msg.field_of_view = math.radians(30.0)
+            msg.min_range = 0.02
+            msg.max_range = 4.0
+            if (valid_mask & (1 << index)) and distances[index] >= 0:
+                msg.range = distances[index] / 1000.0
+            else:
+                # A timeout means no return inside the sensor range, not a
+                # close obstacle. A max-range reading also clears RangeLayer.
+                msg.range = msg.max_range
+            self.range_publishers[name].publish(msg)
+
+        if blocked_mask != self.last_blocked_mask:
+            self.last_blocked_mask = blocked_mask
+            self.publish_status(f'SAFETY_BLOCKED,{blocked_mask}')
+
+    def process_safety(self, line):
+        try:
+            blocked_mask = int(line.split(',', 1)[1])
+            if blocked_mask < 0 or blocked_mask > 0x0F:
+                raise ValueError('mask outside 0..15')
+        except (IndexError, ValueError):
+            self.get_logger().warning(f'Invalid safety packet: {line[:80]}')
+            return
+        self.last_blocked_mask = blocked_mask
+        self.publish_status(f'SAFETY_BLOCKED,{blocked_mask}')
 
     def process_encoder(self, line):
         try:

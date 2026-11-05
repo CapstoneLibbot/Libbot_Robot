@@ -51,5 +51,36 @@
       <inertial><mass value="0.15"/><inertia ixx="0.00015" ixy="0" ixz="0" iyy="0.00015" iyz="0" izz="0.00015"/></inertial>
     </link>
     <joint name="base_link_to_laser" type="fixed"><parent link="base_link"/><child link="laser"/><origin xyz="-0.10 0 0.1925" rpy="0 0 0"/></joint>
+
+    <link name="imu_link"/>
+    <joint name="base_link_to_imu" type="fixed">
+      <parent link="base_link"/><child link="imu_link"/>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+    </joint>
+
+    <!-- Sensor centres at the 0.30 x 0.30 m outer envelope. -->
+    <link name="ultrasonic_front_link"/>
+    <joint name="base_link_to_ultrasonic_front" type="fixed">
+      <parent link="base_link"/><child link="ultrasonic_front_link"/>
+      <origin xyz="0.15 0 0" rpy="0 0 0"/>
+    </joint>
+
+    <link name="ultrasonic_left_link"/>
+    <joint name="base_link_to_ultrasonic_left" type="fixed">
+      <parent link="base_link"/><child link="ultrasonic_left_link"/>
+      <origin xyz="0 0.15 0" rpy="0 0 1.57079632679"/>
+    </joint>
+
+    <link name="ultrasonic_right_link"/>
+    <joint name="base_link_to_ultrasonic_right" type="fixed">
+      <parent link="base_link"/><child link="ultrasonic_right_link"/>
+      <origin xyz="0 -0.15 0" rpy="0 0 -1.57079632679"/>
+    </joint>
+
+    <link name="ultrasonic_rear_link"/>
+    <joint name="base_link_to_ultrasonic_rear" type="fixed">
+      <parent link="base_link"/><child link="ultrasonic_rear_link"/>
+      <origin xyz="-0.15 0 0" rpy="0 0 3.14159265359"/>
+    </joint>
   </xacro:macro>
 </robot>
