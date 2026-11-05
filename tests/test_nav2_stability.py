@@ -397,7 +397,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertEqual(len(root.findall(".//PipelineSequence")), 1)
                 rate_controller = root.find(".//PipelineSequence/RateController")
                 self.assertIsNotNone(rate_controller)
-                self.assertEqual(rate_controller.attrib["hz"], "2.0")
+                self.assertEqual(rate_controller.attrib["hz"], "3.0")
                 compute = computes[0]
                 follow = root.find(".//FollowPath")
                 self.assertEqual(compute.attrib[goal_input], "{" + goal_input + "}")
@@ -414,7 +414,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertNotIn("SequenceWithMemory", tags)
                 rate = root.find(".//RateController")
                 self.assertIsNotNone(rate)
-                self.assertEqual(rate.attrib["hz"], "2.0")
+                self.assertEqual(rate.attrib["hz"], "3.0")
                 backups = root.findall(".//BackUp")
                 self.assertEqual(len(backups), 1)
                 for backup in backups:
@@ -514,7 +514,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
             (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
         )
         global_params = config["global_costmap"]["global_costmap"]["ros__parameters"]
-        self.assertEqual(global_params["update_frequency"], 2.0)
+        self.assertEqual(global_params["update_frequency"], 3.0)
         self.assertEqual(global_params["publish_frequency"], 2.0)
         expected_topics = [
             "/range/front",

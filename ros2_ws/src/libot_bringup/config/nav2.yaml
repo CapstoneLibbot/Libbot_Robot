@@ -189,7 +189,7 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
-      update_frequency: 2.0
+      update_frequency: 4.0
       publish_frequency: 2.0
       global_frame: map
       robot_base_frame: base_footprint
@@ -258,7 +258,7 @@ map_saver:
     map_subscribe_transient_local: true
 planner_server:
   ros__parameters:
-    expected_planner_frequency: 5.0
+    expected_planner_frequency: 4.0
     planner_plugins:
     - GridBased
     costmap_update_timeout: 1.0
