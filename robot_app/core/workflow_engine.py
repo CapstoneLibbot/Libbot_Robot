@@ -531,7 +531,12 @@ class WorkflowEngine:
                     return f"Step '{identifier}' transitions to unknown step '{target}'."
         return None
 
-    def _preflight(self, require_hardware: bool, allow_active_workflow: bool = False) -> Dict[str, Any]:
+    def _preflight(
+        self,
+        require_hardware: bool,
+        allow_active_workflow: bool = False,
+        require_robot_ui: bool = True,
+    ) -> Dict[str, Any]:
         runtime_id = str(os.getenv("LIBOT_RUNTIME_ID") or self.settings.get("runtime", {}).get("id", "real")).lower()
         checks: Dict[str, Any] = {"runtime_id": runtime_id}
         with self.lock:
@@ -562,16 +567,19 @@ class WorkflowEngine:
             checks["scanner"] = scanner_check
             if scanner_check.get("status") != "ready":
                 return self._error(scanner_check.get("message", "IMX500 camera is unavailable."), "PREFLIGHT_FAILED", checks=checks)
-            ui = hardware.get("ui", {})
-            if not ui.get("enabled", False) or str(ui.get("driver", "tkinter")).lower() != "tkinter":
-                return self._error("Physical workflow requires the robot display/touchscreen.", "PREFLIGHT_FAILED", checks=checks)
-            if str(ui.get("driver", "tkinter")).lower() == "tkinter" and not os.getenv("DISPLAY") and os.name != "nt":
-                return self._error("DISPLAY is not set for the robot touchscreen.", "PREFLIGHT_FAILED", checks=checks)
-            from hardware.ui_controller import UIController
-            ui_check = UIController.probe()
-            checks["display"] = ui_check
-            if ui_check.get("status") != "ready":
-                return self._error(ui_check.get("message", "Touchscreen display is unavailable."), "PREFLIGHT_FAILED", checks=checks)
+            if require_robot_ui:
+                ui = hardware.get("ui", {})
+                if not ui.get("enabled", False) or str(ui.get("driver", "tkinter")).lower() != "tkinter":
+                    return self._error("Physical workflow requires the robot display/touchscreen.", "PREFLIGHT_FAILED", checks=checks)
+                if str(ui.get("driver", "tkinter")).lower() == "tkinter" and not os.getenv("DISPLAY") and os.name != "nt":
+                    return self._error("DISPLAY is not set for the robot touchscreen.", "PREFLIGHT_FAILED", checks=checks)
+                from hardware.ui_controller import UIController
+                ui_check = UIController.probe()
+                checks["display"] = ui_check
+                if ui_check.get("status") != "ready":
+                    return self._error(ui_check.get("message", "Touchscreen display is unavailable."), "PREFLIGHT_FAILED", checks=checks)
+            else:
+                checks["display"] = "not_required_for_workflow"
             speaker = hardware.get("speaker", {})
             if not speaker.get("enabled", False) or not (shutil.which("espeak-ng") or shutil.which("espeak")):
                 return self._error("Physical workflow requires an enabled speaker and espeak-ng/espeak.", "PREFLIGHT_FAILED", checks=checks)
@@ -677,6 +685,7 @@ class WorkflowEngine:
             return self._preflight(
                 bool(request.get("require_hardware", False)),
                 allow_active_workflow=bool(request.get("allow_active_workflow", False)),
+                require_robot_ui=bool(request.get("require_robot_ui", True)),
             )
 
         if command == "cancel_workflow":
