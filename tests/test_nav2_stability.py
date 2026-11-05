@@ -397,7 +397,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertEqual(len(root.findall(".//PipelineSequence")), 1)
                 rate_controller = root.find(".//PipelineSequence/RateController")
                 self.assertIsNotNone(rate_controller)
-                self.assertEqual(rate_controller.attrib["hz"], "3.0")
+                self.assertEqual(rate_controller.attrib["hz"], "4.0")
                 compute = computes[0]
                 follow = root.find(".//FollowPath")
                 self.assertEqual(compute.attrib[goal_input], "{" + goal_input + "}")
@@ -414,7 +414,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertNotIn("SequenceWithMemory", tags)
                 rate = root.find(".//RateController")
                 self.assertIsNotNone(rate)
-                self.assertEqual(rate.attrib["hz"], "3.0")
+                self.assertEqual(rate.attrib["hz"], "4.0")
                 backups = root.findall(".//BackUp")
                 self.assertEqual(len(backups), 1)
                 for backup in backups:
@@ -514,7 +514,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
             (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
         )
         global_params = config["global_costmap"]["global_costmap"]["ros__parameters"]
-        self.assertEqual(global_params["update_frequency"], 3.0)
+        self.assertEqual(global_params["update_frequency"], 4.0)
         self.assertEqual(global_params["publish_frequency"], 2.0)
         expected_topics = [
             "/range/front",
@@ -547,6 +547,70 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertEqual(layer["clear_threshold"], 0.2)
                 self.assertEqual(layer["mark_threshold"], 0.8)
                 self.assertEqual(layer["no_readings_timeout"], 0.0)
+
+    def test_measured_footprint_and_collision_monitor_velocity_chain(self):
+        nav2_config = yaml.safe_load(
+            (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
+        )
+        expected_footprint = [
+            [0.15, 0.15],
+            [0.15, -0.15],
+            [-0.15, -0.15],
+            [-0.15, 0.15],
+        ]
+        for costmap_name in ("local_costmap", "global_costmap"):
+            with self.subTest(costmap=costmap_name):
+                params = nav2_config[costmap_name][costmap_name]["ros__parameters"]
+                self.assertEqual(
+                    yaml.safe_load(params["footprint"]), expected_footprint
+                )
+                self.assertEqual(params["footprint_padding"], 0.015)
+
+        monitor_config = yaml.safe_load(
+            (BRINGUP / "config" / "collision_monitor.yaml").read_text(
+                encoding="utf-8"
+            )
+        )["collision_monitor"]["ros__parameters"]
+        self.assertEqual(monitor_config["cmd_vel_in_topic"], "/cmd_vel")
+        self.assertEqual(monitor_config["cmd_vel_out_topic"], "/cmd_vel_safe")
+        self.assertEqual(monitor_config["source_timeout"], 0.5)
+        self.assertEqual(monitor_config["polygons"], ["FootprintApproach"])
+        self.assertEqual(
+            yaml.safe_load(monitor_config["FootprintApproach"]["points"]),
+            [
+                [0.165, 0.165],
+                [0.165, -0.165],
+                [-0.165, -0.165],
+                [-0.165, 0.165],
+            ],
+        )
+        self.assertEqual(monitor_config["observation_sources"], ["scan"])
+        self.assertEqual(monitor_config["scan"]["topic"], "/scan")
+
+        robot_launch = (BRINGUP / "launch" / "robot.launch.py").read_text(
+            encoding="utf-8"
+        )
+        mapping_launch = (BRINGUP / "launch" / "mapping.launch.py").read_text(
+            encoding="utf-8"
+        )
+        monitor_launch = (
+            BRINGUP / "launch" / "collision_monitor.launch.py"
+        ).read_text(encoding="utf-8")
+        bridge = (
+            ROOT
+            / "ros2_ws"
+            / "src"
+            / "libbot_stm32"
+            / "libbot_stm32"
+            / "stm32_bridge.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"collision_monitor.launch.py"', robot_launch)
+        self.assertIn('"cmd_vel_topic": "/cmd_vel_safe"', robot_launch)
+        self.assertIn("'collision_monitor.launch.py'", mapping_launch)
+        self.assertIn("'cmd_vel_topic': '/cmd_vel_safe'", mapping_launch)
+        self.assertIn('package="nav2_collision_monitor"', monitor_launch)
+        self.assertIn('"autostart": True', monitor_launch)
+        self.assertIn("declare_parameter('cmd_vel_topic', '/cmd_vel_safe')", bridge)
 
 
 if __name__ == "__main__":

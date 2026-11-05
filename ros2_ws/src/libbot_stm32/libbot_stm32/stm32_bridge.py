@@ -44,13 +44,17 @@ class STM32Bridge(Node):
         super().__init__('stm32_bridge')
         self.declare_parameter('port', '/dev/serial0')
         self.declare_parameter('baudrate', 115200)
+        self.declare_parameter('cmd_vel_topic', '/cmd_vel_safe')
         self.port = str(self.get_parameter('port').value)
         self.baudrate = int(self.get_parameter('baudrate').value)
+        self.cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
 
         self.serial = serial.Serial(self.port, self.baudrate, timeout=0, write_timeout=0.1)
         self.get_logger().info(f'Connected to STM32: {self.port} @ {self.baudrate}')
 
-        self.cmd_vel_sub = self.create_subscription(Twist, '/cmd_vel', self.cmd_vel_callback, 10)
+        self.cmd_vel_sub = self.create_subscription(
+            Twist, self.cmd_vel_topic, self.cmd_vel_callback, 10
+        )
         self.status_pub = self.create_publisher(String, '/stm32_bridge/status', 10)
         self.odom_pub = self.create_publisher(Odometry, '/odom', 20)
         self.battery_pub = self.create_publisher(BatteryState, '/battery_state', 10)
@@ -82,7 +86,8 @@ class STM32Bridge(Node):
         self.get_logger().info(
             f'STM32 bridge started: wheel={self.WHEEL_DIAMETER:.3f}m, '
             f'CPR={self.ENCODER_CPR:.0f}, wheelbase={self.WHEEL_BASE:.3f}m, '
-            f'track={self.TRACK_WIDTH:.3f}m, L+W={self.L_PLUS_W:.3f}m'
+            f'track={self.TRACK_WIDTH:.3f}m, L+W={self.L_PLUS_W:.3f}m, '
+            f'cmd_vel={self.cmd_vel_topic}'
         )
 
     def send_velocity(self, vx, vy, wz):
@@ -125,7 +130,9 @@ class STM32Bridge(Node):
     def cmd_vel_callback(self, msg):
         vx, vy, wz = float(msg.linear.x), float(msg.linear.y), float(msg.angular.z)
         if not all(math.isfinite(v) for v in (vx, vy, wz)):
-            self.get_logger().warning('Ignoring non-finite /cmd_vel')
+            self.get_logger().warning(
+                f'Ignoring non-finite velocity on {self.cmd_vel_topic}'
+            )
             return
         self.last_cmd_monotonic = time.monotonic()
         self.command_is_active = any(abs(v) > 1e-6 for v in (vx, vy, wz))
@@ -135,7 +142,9 @@ class STM32Bridge(Node):
         if self.command_is_active and (time.monotonic() - self.last_cmd_monotonic) > self.CMD_TIMEOUT_SEC:
             self.send_velocity(0.0, 0.0, 0.0)
             self.command_is_active = False
-            self.get_logger().warning('No /cmd_vel recently; sent zero velocity to STM32')
+            self.get_logger().warning(
+                f'No {self.cmd_vel_topic} recently; sent zero velocity to STM32'
+            )
 
     def serial_callback(self):
         try:

@@ -1,10 +1,10 @@
 # LiBot ROS 2 Jazzy Nav2 parameters — initial low-speed mecanum testing
 # Frame tree: map -> odom -> base_footprint -> base_link -> laser
-# IMPORTANT: The footprint below is a placeholder from the original configuration.
-# Measure the actual outer dimensions including chassis / protrusions before moving.
+# Measured outer dimensions including wheels: 0.30 x 0.30 m.
+# Nav2 adds 0.015 m on every side, producing a 0.33 x 0.33 m safety footprint.
 # navigation.launch.py starts only the Nav2 nodes configured in this file.
-# collision_monitor, route_server and docking_server are omitted intentionally.
-# Ensure Nav2 controller output reaches STM32 bridge /cmd_vel via launch remapping.
+# Collision Monitor is launched by robot.launch.py and forwards /cmd_vel to
+# /cmd_vel_safe. The STM32 bridge subscribes only to the safe output.
 # Gazebo and the current hardware model both expose differential-drive motion.
 
 amcl:
@@ -142,8 +142,8 @@ local_costmap:
       width: 3
       height: 3
       resolution: 0.05
-      footprint: '[[0.165, 0.165], [0.165, -0.165], [-0.165, -0.165], [-0.165, 0.165]]'
-      footprint_padding: 0.02
+      footprint: '[[0.15, 0.15], [0.15, -0.15], [-0.15, -0.15], [-0.15, 0.15]]'
+      footprint_padding: 0.015
       plugins:
       - obstacle_layer
       - range_layer
@@ -195,8 +195,8 @@ global_costmap:
       robot_base_frame: base_footprint
       resolution: 0.05
       track_unknown_space: true
-      footprint: '[[0.165, 0.165], [0.165, -0.165], [-0.165, -0.165], [-0.165, 0.165]]'
-      footprint_padding: 0.02
+      footprint: '[[0.15, 0.15], [0.15, -0.15], [-0.15, -0.15], [-0.15, 0.15]]'
+      footprint_padding: 0.015
       plugins:
       - static_layer
       - obstacle_layer

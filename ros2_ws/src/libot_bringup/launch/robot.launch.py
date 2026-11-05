@@ -18,6 +18,11 @@ def generate_launch_description():
         "launch",
         "description.launch.py",
     )
+    collision_monitor_launch = os.path.join(
+        get_package_share_directory("libot_bringup"),
+        "launch",
+        "collision_monitor.launch.py",
+    )
 
     lidar_port = LaunchConfiguration("lidar_port")
     stm32_port = LaunchConfiguration("stm32_port")
@@ -71,6 +76,10 @@ def generate_launch_description():
                 "use_sim_time": use_sim_time,
             }],
         ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(collision_monitor_launch),
+            launch_arguments={"use_sim_time": use_sim_time}.items(),
+        ),
         Node(
             package="libbot_stm32",
             executable="stm32_bridge",
@@ -81,6 +90,7 @@ def generate_launch_description():
             parameters=[{
                 "port": stm32_port,
                 "baudrate": 115200,
+                "cmd_vel_topic": "/cmd_vel_safe",
                 "use_sim_time": use_sim_time,
             }],
         ),

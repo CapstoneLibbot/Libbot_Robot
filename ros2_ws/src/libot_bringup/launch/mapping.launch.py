@@ -28,6 +28,12 @@ def generate_launch_description():
         'description.launch.py'
     )
 
+    collision_monitor_launch = os.path.join(
+        bringup_share,
+        'launch',
+        'collision_monitor.launch.py'
+    )
+
     slam_params_file = os.path.join(
         bringup_share,
         'config',
@@ -72,10 +78,21 @@ def generate_launch_description():
                     'angle_compensate': True,
                 }],
             ),
+            IncludeLaunchDescription(
+                PythonLaunchDescriptionSource(collision_monitor_launch),
+                launch_arguments={
+                    'use_sim_time': LaunchConfiguration('use_sim_time'),
+                }.items(),
+            ),
             Node(
                 package='libbot_stm32', executable='stm32_bridge', name='stm32_bridge',
                 output='screen',
-                parameters=[{'port': LaunchConfiguration('stm32_port'), 'baudrate': 115200, 'use_sim_time': False}],
+                parameters=[{
+                    'port': LaunchConfiguration('stm32_port'),
+                    'baudrate': 115200,
+                    'cmd_vel_topic': '/cmd_vel_safe',
+                    'use_sim_time': False,
+                }],
             ),
         ]),
 

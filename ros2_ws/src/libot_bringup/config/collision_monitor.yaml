@@ -1,0 +1,36 @@
+collision_monitor:
+  ros__parameters:
+    use_sim_time: false
+    base_frame_id: base_footprint
+    odom_frame_id: odom
+    cmd_vel_in_topic: /cmd_vel
+    cmd_vel_out_topic: /cmd_vel_safe
+    state_topic: /collision_monitor_state
+    transform_tolerance: 0.5
+    source_timeout: 0.5
+    base_shift_correction: true
+    stop_pub_timeout: 1.0
+    enable_stamped_cmd_vel: false
+
+    # Physical robot is 0.30 x 0.30 m. The 0.015 m margin on each side gives
+    # an effective protected footprint of 0.33 x 0.33 m.
+    polygons:
+    - FootprintApproach
+    FootprintApproach:
+      type: polygon
+      points: '[[0.165, 0.165], [0.165, -0.165], [-0.165, -0.165], [-0.165, 0.165]]'
+      action_type: approach
+      time_before_collision: 1.0
+      simulation_time_step: 0.05
+      min_points: 1
+      visualize: true
+      polygon_pub_topic: /collision_monitor/footprint_approach
+      enabled: true
+
+    observation_sources:
+    - scan
+    scan:
+      type: scan
+      topic: /scan
+      source_timeout: 0.5
+      enabled: true
