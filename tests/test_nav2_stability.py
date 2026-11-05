@@ -383,7 +383,7 @@ class Nav2StabilityTests(unittest.TestCase):
 
 
 class Nav2ConfigurationTests(unittest.TestCase):
-    def test_custom_behavior_trees_replan_and_recover_without_spinning(self):
+    def test_custom_behavior_trees_wait_replan_and_turn_safely(self):
         for name, compute_tag, goal_input in (
             ("navigate_to_pose.xml", "ComputePathToPose", "goal"),
             ("navigate_through_poses.xml", "ComputePathThroughPoses", "goals"),
@@ -410,17 +410,17 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertIn("PipelineSequence", tags)
                 self.assertIn("RateController", tags)
                 self.assertIn("BackUp", tags)
+                self.assertIn("Spin", tags)
                 self.assertNotIn("SequenceWithMemory", tags)
-                self.assertNotIn("Spin", tags)
                 rate = root.find(".//RateController")
                 self.assertIsNotNone(rate)
                 self.assertEqual(rate.attrib["hz"], "1.0")
                 backups = root.findall(".//BackUp")
-                self.assertEqual(len(backups), 2)
+                self.assertEqual(len(backups), 1)
                 for backup in backups:
-                    self.assertEqual(backup.attrib["backup_dist"], "0.15")
+                    self.assertEqual(backup.attrib["backup_dist"], "0.20")
                     self.assertEqual(backup.attrib["backup_speed"], "0.08")
-                    self.assertEqual(backup.attrib["time_allowance"], "5.0")
+                    self.assertEqual(backup.attrib["time_allowance"], "6.0")
                     self.assertNotIn("disable_collision_checks", backup.attrib)
                 controller_recovery = root.find(
                     ".//Sequence[@name='BackUpAndReplanOnControllerFailure']"
@@ -428,11 +428,19 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertIsNotNone(controller_recovery)
                 self.assertIsNotNone(controller_recovery.find("BackUp"))
                 self.assertIsNotNone(controller_recovery.find("Wait"))
+                self.assertIsNone(controller_recovery.find("ClearEntireCostmap"))
                 forced_replan = controller_recovery.find(compute_tag)
                 self.assertIsNotNone(forced_replan)
                 self.assertEqual(forced_replan.attrib[goal_input], "{" + goal_input + "}")
                 self.assertEqual(forced_replan.attrib["path"], "{path}")
-                self.assertEqual(len(root.findall(".//Wait")), 2)
+                spins = root.findall(".//Fallback[@name='TurnToFreeSide']/Spin")
+                self.assertEqual(len(spins), 2)
+                self.assertEqual(
+                    [spin.attrib["spin_dist"] for spin in spins],
+                    ["1.5708", "-1.5708"],
+                )
+                self.assertTrue(all(spin.attrib["time_allowance"] == "8.0" for spin in spins))
+                self.assertEqual(len(root.findall(".//Wait")), 5)
                 self.assertEqual(len(root.findall(".//WouldAPlannerRecoveryHelp")), 2)
                 self.assertEqual(len(root.findall(".//WouldAControllerRecoveryHelp")), 2)
                 costmap_services = {
@@ -445,7 +453,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 })
                 self.assertEqual(
                     [node.attrib["wait_duration"] for node in root.findall(".//Wait")],
-                    ["0.5", "2.0"],
+                    ["0.5", "0.5", "0.5", "0.5", "2.0"],
                 )
 
     def test_launch_uses_installed_trees_and_holds_navigation_lifecycle(self):
@@ -477,15 +485,15 @@ class Nav2ConfigurationTests(unittest.TestCase):
             "required_movement_radius: 0.05",
             "required_movement_angle: 0.10",
             "movement_time_allowance: 10.0",
-            "failure_tolerance: 3.0",
+            "failure_tolerance: 10.0",
             "stateful: true",
             "xy_goal_tolerance: 0.10",
             "yaw_goal_tolerance: 0.20",
             "rotate_to_heading_angular_vel: 0.8",
             "rotate_to_heading_min_angle: 0.524",
             "max_angular_accel: 4.0",
-            "max_rotational_vel: 0.8",
-            "min_rotational_vel: 0.2",
+            "max_rotational_vel: 0.4",
+            "min_rotational_vel: 0.15",
             "rotational_acc_lim: 2.0",
             "- -4.0",
             "allow_reversing: false",
@@ -495,10 +503,11 @@ class Nav2ConfigurationTests(unittest.TestCase):
             with self.subTest(setting=value):
                 self.assertIn(value, config)
         behavior_config = config.split("behavior_server:", 1)[1].split("waypoint_follower:", 1)[0]
+        self.assertIn("- spin", behavior_config)
         self.assertIn("- backup", behavior_config)
         self.assertIn("- wait", behavior_config)
+        self.assertIn("plugin: nav2_behaviors::Spin", behavior_config)
         self.assertIn("plugin: nav2_behaviors::BackUp", behavior_config)
-        self.assertNotRegex(behavior_config, r"(?m)^\s*-\s*spin\s*$")
 
     def test_sonar_range_layer_marks_local_and_global_costmaps(self):
         config = yaml.safe_load(

@@ -79,9 +79,9 @@ controller_server:
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
-    # Replanning runs at 1 Hz. Allow several fresh paths to arrive before
-    # FollowPath gives up on a temporarily blocked controller command.
-    failure_tolerance: 3.0
+    # Treat a blocked controller as persistent only after ten seconds. This
+    # matches the progress checker so transient obstacles can move away first.
+    failure_tolerance: 10.0
     publish_zero_velocity: true
     progress_checker_plugins:
     - progress_checker
@@ -284,8 +284,11 @@ behavior_server:
     global_footprint_topic: global_costmap/published_footprint
     cycle_frequency: 10.0
     behavior_plugins:
+    - spin
     - backup
     - wait
+    spin:
+      plugin: nav2_behaviors::Spin
     backup:
       plugin: nav2_behaviors::BackUp
     wait:
@@ -295,8 +298,8 @@ behavior_server:
     robot_base_frame: base_footprint
     transform_tolerance: 0.1
     simulate_ahead_time: 2.0
-    max_rotational_vel: 0.8
-    min_rotational_vel: 0.2
+    max_rotational_vel: 0.4
+    min_rotational_vel: 0.15
     rotational_acc_lim: 2.0
 waypoint_follower:
   ros__parameters:

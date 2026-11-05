@@ -12,6 +12,7 @@
               <ClearEntireCostmap name="ClearGlobalCostmapContext"
                                   service_name="global_costmap/clear_entirely_global_costmap"
                                   server_timeout="5000"/>
+              <Wait wait_duration="0.5"/>
             </Sequence>
           </RecoveryNode>
         </RateController>
@@ -20,11 +21,8 @@
                       error_code_id="{follow_path_error_code}"/>
           <Sequence name="BackUpAndReplanOnControllerFailure">
             <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
-            <ClearEntireCostmap name="ClearLocalCostmapContext"
-                                service_name="local_costmap/clear_entirely_local_costmap"
-                                server_timeout="5000"/>
-            <BackUp backup_dist="0.15" backup_speed="0.08"
-                    time_allowance="5.0"/>
+            <BackUp backup_dist="0.20" backup_speed="0.08"
+                    time_allowance="6.0"/>
             <Wait wait_duration="0.5"/>
             <ComputePathThroughPoses goals="{goals}" path="{path}" planner_id="GridBased"
                                      error_code_id="{compute_path_error_code}"/>
@@ -39,17 +37,20 @@
         <ReactiveFallback name="NavigateThroughPosesRecoveryFallback">
           <GoalUpdated/>
           <RoundRobin name="NavigateThroughPosesRecoveryActions">
-            <Sequence name="ClearBothCostmaps">
+            <Sequence name="TurnAndRefreshSensors">
+              <Fallback name="TurnToFreeSide">
+                <Spin spin_dist="1.5708" time_allowance="8.0"/>
+                <Spin spin_dist="-1.5708" time_allowance="8.0"/>
+              </Fallback>
+              <Wait wait_duration="0.5"/>
+            </Sequence>
+            <Sequence name="ClearLocalCostmapAndRefresh">
               <ClearEntireCostmap name="ClearLocalCostmap"
                                   service_name="local_costmap/clear_entirely_local_costmap"
                                   server_timeout="5000"/>
-              <ClearEntireCostmap name="ClearGlobalCostmap"
-                                  service_name="global_costmap/clear_entirely_global_costmap"
-                                  server_timeout="5000"/>
+              <Wait wait_duration="0.5"/>
             </Sequence>
             <Wait wait_duration="2.0"/>
-            <BackUp backup_dist="0.15" backup_speed="0.08"
-                    time_allowance="5.0"/>
           </RoundRobin>
         </ReactiveFallback>
       </Sequence>
