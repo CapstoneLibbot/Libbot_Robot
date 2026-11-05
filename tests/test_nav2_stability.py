@@ -397,7 +397,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertEqual(len(root.findall(".//PipelineSequence")), 1)
                 rate_controller = root.find(".//PipelineSequence/RateController")
                 self.assertIsNotNone(rate_controller)
-                self.assertEqual(rate_controller.attrib["hz"], "1.0")
+                self.assertEqual(rate_controller.attrib["hz"], "2.0")
                 compute = computes[0]
                 follow = root.find(".//FollowPath")
                 self.assertEqual(compute.attrib[goal_input], "{" + goal_input + "}")
@@ -414,13 +414,13 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertNotIn("SequenceWithMemory", tags)
                 rate = root.find(".//RateController")
                 self.assertIsNotNone(rate)
-                self.assertEqual(rate.attrib["hz"], "1.0")
+                self.assertEqual(rate.attrib["hz"], "2.0")
                 backups = root.findall(".//BackUp")
                 self.assertEqual(len(backups), 1)
                 for backup in backups:
                     self.assertEqual(backup.attrib["backup_dist"], "0.20")
-                    self.assertEqual(backup.attrib["backup_speed"], "0.08")
-                    self.assertEqual(backup.attrib["time_allowance"], "6.0")
+                    self.assertEqual(backup.attrib["backup_speed"], "0.12")
+                    self.assertEqual(backup.attrib["time_allowance"], "4.0")
                     self.assertNotIn("disable_collision_checks", backup.attrib)
                 controller_recovery = root.find(
                     ".//Sequence[@name='BackUpAndReplanOnControllerFailure']"
@@ -439,7 +439,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                     [spin.attrib["spin_dist"] for spin in spins],
                     ["1.5708", "-1.5708"],
                 )
-                self.assertTrue(all(spin.attrib["time_allowance"] == "8.0" for spin in spins))
+                self.assertTrue(all(spin.attrib["time_allowance"] == "6.0" for spin in spins))
                 self.assertEqual(len(root.findall(".//Wait")), 5)
                 self.assertEqual(len(root.findall(".//WouldAPlannerRecoveryHelp")), 2)
                 self.assertEqual(len(root.findall(".//WouldAControllerRecoveryHelp")), 2)
@@ -484,16 +484,16 @@ class Nav2ConfigurationTests(unittest.TestCase):
             "plugin: nav2_controller::PoseProgressChecker",
             "required_movement_radius: 0.05",
             "required_movement_angle: 0.10",
-            "movement_time_allowance: 10.0",
-            "failure_tolerance: 10.0",
+            "movement_time_allowance: 5.0",
+            "failure_tolerance: 5.0",
             "stateful: true",
             "xy_goal_tolerance: 0.10",
             "yaw_goal_tolerance: 0.20",
             "rotate_to_heading_angular_vel: 0.8",
             "rotate_to_heading_min_angle: 0.524",
             "max_angular_accel: 4.0",
-            "max_rotational_vel: 0.4",
-            "min_rotational_vel: 0.15",
+            "max_rotational_vel: 0.5",
+            "min_rotational_vel: 0.2",
             "rotational_acc_lim: 2.0",
             "- -4.0",
             "allow_reversing: false",
@@ -513,6 +513,9 @@ class Nav2ConfigurationTests(unittest.TestCase):
         config = yaml.safe_load(
             (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
         )
+        global_params = config["global_costmap"]["global_costmap"]["ros__parameters"]
+        self.assertEqual(global_params["update_frequency"], 2.0)
+        self.assertEqual(global_params["publish_frequency"], 2.0)
         expected_topics = [
             "/range/front",
             "/range/left",
