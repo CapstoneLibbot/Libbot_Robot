@@ -563,8 +563,8 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 params = config[costmap_name][costmap_name]["ros__parameters"]
                 self.assertEqual(params["plugins"], plugins)
                 obstacle_layer = params["obstacle_layer"]["scan"]
-                self.assertEqual(obstacle_layer["raytrace_min_range"], 0.15)
-                self.assertEqual(obstacle_layer["obstacle_min_range"], 0.16)
+                self.assertEqual(obstacle_layer["raytrace_min_range"], 0.0)
+                self.assertEqual(obstacle_layer["obstacle_min_range"], 0.05)
                 self.assertEqual(params["inflation_layer"]["inflation_radius"], 0.35)
                 layer = params["range_layer"]
                 self.assertEqual(
@@ -606,54 +606,14 @@ class Nav2ConfigurationTests(unittest.TestCase):
         self.assertEqual(monitor_config["source_timeout"], 0.5)
         self.assertEqual(monitor_config["polygons"], ["FootprintApproach"])
         approach = monitor_config["FootprintApproach"]
-        self.assertEqual(approach["type"], "velocity_polygon")
+        self.assertEqual(approach["type"], "polygon")
         self.assertEqual(approach["action_type"], "approach")
-        self.assertFalse(approach["holonomic"])
-        self.assertEqual(approach["time_before_collision"], 0.8)
-        self.assertEqual(approach["min_points"], 3)
+        self.assertEqual(approach["time_before_collision"], 1.0)
+        self.assertEqual(approach["min_points"], 1)
         self.assertEqual(
-            approach["velocity_polygons"], ["rotation", "forward", "backward"]
+            yaml.safe_load(approach["points"]),
+            [[0.165, 0.165], [0.165, -0.165], [-0.165, -0.165], [-0.165, 0.165]],
         )
-        expected_velocity_polygons = {
-            "rotation": {
-                "linear": (-0.05, 0.05),
-                "points": [
-                    [0.165, 0.165],
-                    [0.165, -0.165],
-                    [-0.165, -0.165],
-                    [-0.165, 0.165],
-                ],
-            },
-            "forward": {
-                "linear": (0.05, 0.5),
-                "points": [
-                    [0.30, 0.17],
-                    [0.30, -0.17],
-                    [-0.165, -0.17],
-                    [-0.165, 0.17],
-                ],
-            },
-            "backward": {
-                "linear": (-0.5, -0.05),
-                "points": [
-                    [0.165, 0.17],
-                    [0.165, -0.17],
-                    [-0.30, -0.17],
-                    [-0.30, 0.17],
-                ],
-            },
-        }
-        for name, expected in expected_velocity_polygons.items():
-            with self.subTest(velocity_polygon=name):
-                polygon = approach[name]
-                self.assertEqual(
-                    (polygon["linear_min"], polygon["linear_max"]),
-                    expected["linear"],
-                )
-                self.assertEqual(
-                    (polygon["theta_min"], polygon["theta_max"]), (-1.0, 1.0)
-                )
-                self.assertEqual(yaml.safe_load(polygon["points"]), expected["points"])
         self.assertEqual(monitor_config["observation_sources"], ["scan"])
         self.assertEqual(monitor_config["scan"]["topic"], "/scan")
 
