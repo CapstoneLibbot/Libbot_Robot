@@ -397,7 +397,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertEqual(len(root.findall(".//PipelineSequence")), 1)
                 rate_controller = root.find(".//PipelineSequence/RateController")
                 self.assertIsNotNone(rate_controller)
-                self.assertEqual(rate_controller.attrib["hz"], "4.0")
+                self.assertEqual(rate_controller.attrib["hz"], "2.0")
                 compute = computes[0]
                 follow = root.find(".//FollowPath")
                 self.assertEqual(compute.attrib[goal_input], "{" + goal_input + "}")
@@ -417,7 +417,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertNotIn("SequenceWithMemory", tags)
                 rate = root.find(".//RateController")
                 self.assertIsNotNone(rate)
-                self.assertEqual(rate.attrib["hz"], "4.0")
+                self.assertEqual(rate.attrib["hz"], "2.0")
                 backups = root.findall(".//BackUp")
                 expected_backup_count = 2 if name == "navigate_to_pose.xml" else 1
                 self.assertEqual(len(backups), expected_backup_count)
@@ -506,16 +506,17 @@ class Nav2ConfigurationTests(unittest.TestCase):
     def test_nav2_tuning_matches_replanning_motion_policy(self):
         config = (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
         expected = (
+            "expected_planner_frequency: 2.0",
             "publish_zero_velocity: true",
             "plugin: nav2_controller::PoseProgressChecker",
             "required_movement_radius: 0.05",
             "required_movement_angle: 0.10",
-            "movement_time_allowance: 3.0",
-            "failure_tolerance: 1.0",
+            "movement_time_allowance: 5.0",
+            "failure_tolerance: 5.0",
             "stateful: true",
             "xy_goal_tolerance: 0.10",
             "yaw_goal_tolerance: 0.20",
-            "rotate_to_heading_angular_vel: 0.5",
+            "rotate_to_heading_angular_vel: 0.8",
             "rotate_to_heading_min_angle: 0.524",
             "max_angular_accel: 4.0",
             "max_rotational_vel: 0.5",
