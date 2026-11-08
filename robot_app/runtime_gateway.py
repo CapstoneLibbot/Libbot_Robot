@@ -406,6 +406,10 @@ class RobotRuntimeGateway:
                 result["stm32_acknowledged"] = True
             return result
         if command == "start_mapping":
+            # The real runtime's auto-navigation worker may still be waiting for
+            # a saved map. A mapping request is an explicit mode choice: keep
+            # that worker from starting Nav2 while SLAM is active.
+            self._navigation_bootstrap_complete = True
             return self._start_mapping()
         if command == "stop_mapping":
             self._terminate_process(self._mapping_process)
@@ -643,6 +647,11 @@ class RobotRuntimeGateway:
         with self._lock:
             self.navigation_mode_state = "FETCHING_MAP"
         while self._running and not self._navigation_bootstrap_complete:
+            # A user can start SLAM while this worker is waiting for the backend.
+            # Do not race the explicit mapping mode by launching Nav2 afterward.
+            if self._mapping_process is not None and self._mapping_process.poll() is None:
+                self._navigation_bootstrap_complete = True
+                return
             try:
                 latest = self._get_backend_json(
                     f"{self.backend_url}/api/robot-runtimes/real/maps/latest"
