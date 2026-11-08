@@ -410,18 +410,32 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertIn("PipelineSequence", tags)
                 self.assertIn("RateController", tags)
                 self.assertIn("BackUp", tags)
-                self.assertIn("Spin", tags)
+                if name == "navigate_to_pose.xml":
+                    self.assertNotIn("Spin", tags)
+                else:
+                    self.assertIn("Spin", tags)
                 self.assertNotIn("SequenceWithMemory", tags)
                 rate = root.find(".//RateController")
                 self.assertIsNotNone(rate)
                 self.assertEqual(rate.attrib["hz"], "4.0")
                 backups = root.findall(".//BackUp")
-                self.assertEqual(len(backups), 1)
-                for backup in backups:
-                    self.assertEqual(backup.attrib["backup_dist"], "0.20")
-                    self.assertEqual(backup.attrib["backup_speed"], "0.12")
-                    self.assertEqual(backup.attrib["time_allowance"], "4.0")
-                    self.assertNotIn("disable_collision_checks", backup.attrib)
+                expected_backup_count = 2 if name == "navigate_to_pose.xml" else 1
+                self.assertEqual(len(backups), expected_backup_count)
+                primary_backup = backups[0]
+                self.assertEqual(primary_backup.attrib["backup_dist"], "0.20")
+                self.assertEqual(
+                    primary_backup.attrib["backup_speed"],
+                    "0.10" if name == "navigate_to_pose.xml" else "0.12",
+                )
+                self.assertEqual(
+                    primary_backup.attrib["time_allowance"],
+                    "5.0" if name == "navigate_to_pose.xml" else "4.0",
+                )
+                self.assertNotIn("disable_collision_checks", primary_backup.attrib)
+                if name == "navigate_to_pose.xml":
+                    short_backup = backups[1]
+                    self.assertEqual(short_backup.attrib["backup_dist"], "0.15")
+                    self.assertNotIn("disable_collision_checks", short_backup.attrib)
                 controller_recovery = root.find(
                     ".//Sequence[@name='BackUpAndReplanOnControllerFailure']"
                 )
@@ -434,26 +448,38 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertEqual(forced_replan.attrib[goal_input], "{" + goal_input + "}")
                 self.assertEqual(forced_replan.attrib["path"], "{path}")
                 spins = root.findall(".//Fallback[@name='TurnToFreeSide']/Spin")
-                self.assertEqual(len(spins), 2)
-                self.assertEqual(
-                    [spin.attrib["spin_dist"] for spin in spins],
-                    ["1.5708", "-1.5708"],
-                )
-                self.assertTrue(all(spin.attrib["time_allowance"] == "6.0" for spin in spins))
-                self.assertEqual(len(root.findall(".//Wait")), 5)
+                if name == "navigate_to_pose.xml":
+                    self.assertEqual(spins, [])
+                    round_robin = root.find(".//RoundRobin[@name='NavigateRecoveryActions']")
+                    self.assertEqual(
+                        [child.tag for child in round_robin], ["BackUp", "Wait"]
+                    )
+                    expected_waits = ["0.5", "0.5", "2.0"]
+                else:
+                    self.assertEqual(len(spins), 2)
+                    self.assertEqual(
+                        [spin.attrib["spin_dist"] for spin in spins],
+                        ["1.5708", "-1.5708"],
+                    )
+                    self.assertTrue(
+                        all(spin.attrib["time_allowance"] == "6.0" for spin in spins)
+                    )
+                    expected_waits = ["0.5", "0.5", "0.5", "0.5", "2.0"]
+                self.assertEqual(len(root.findall(".//Wait")), len(expected_waits))
                 self.assertEqual(len(root.findall(".//WouldAPlannerRecoveryHelp")), 2)
                 self.assertEqual(len(root.findall(".//WouldAControllerRecoveryHelp")), 2)
                 costmap_services = {
                     node.attrib.get("service_name")
                     for node in root.findall(".//ClearEntireCostmap")
                 }
-                self.assertEqual(costmap_services, {
+                expected_services = set() if name == "navigate_to_pose.xml" else {
                     "local_costmap/clear_entirely_local_costmap",
                     "global_costmap/clear_entirely_global_costmap",
-                })
+                }
+                self.assertEqual(costmap_services, expected_services)
                 self.assertEqual(
                     [node.attrib["wait_duration"] for node in root.findall(".//Wait")],
-                    ["0.5", "0.5", "0.5", "0.5", "2.0"],
+                    expected_waits,
                 )
 
     def test_launch_uses_installed_trees_and_holds_navigation_lifecycle(self):
@@ -484,12 +510,12 @@ class Nav2ConfigurationTests(unittest.TestCase):
             "plugin: nav2_controller::PoseProgressChecker",
             "required_movement_radius: 0.05",
             "required_movement_angle: 0.10",
-            "movement_time_allowance: 5.0",
-            "failure_tolerance: 5.0",
+            "movement_time_allowance: 3.0",
+            "failure_tolerance: 1.0",
             "stateful: true",
             "xy_goal_tolerance: 0.10",
             "yaw_goal_tolerance: 0.20",
-            "rotate_to_heading_angular_vel: 0.8",
+            "rotate_to_heading_angular_vel: 0.5",
             "rotate_to_heading_min_angle: 0.524",
             "max_angular_accel: 4.0",
             "max_rotational_vel: 0.5",
@@ -536,6 +562,10 @@ class Nav2ConfigurationTests(unittest.TestCase):
             with self.subTest(costmap=costmap_name):
                 params = config[costmap_name][costmap_name]["ros__parameters"]
                 self.assertEqual(params["plugins"], plugins)
+                obstacle_layer = params["obstacle_layer"]["scan"]
+                self.assertEqual(obstacle_layer["raytrace_min_range"], 0.15)
+                self.assertEqual(obstacle_layer["obstacle_min_range"], 0.16)
+                self.assertEqual(params["inflation_layer"]["inflation_radius"], 0.35)
                 layer = params["range_layer"]
                 self.assertEqual(
                     layer["plugin"], "nav2_costmap_2d::RangeSensorLayer"
@@ -575,15 +605,55 @@ class Nav2ConfigurationTests(unittest.TestCase):
         self.assertEqual(monitor_config["cmd_vel_out_topic"], "/cmd_vel_safe")
         self.assertEqual(monitor_config["source_timeout"], 0.5)
         self.assertEqual(monitor_config["polygons"], ["FootprintApproach"])
+        approach = monitor_config["FootprintApproach"]
+        self.assertEqual(approach["type"], "velocity_polygon")
+        self.assertEqual(approach["action_type"], "approach")
+        self.assertFalse(approach["holonomic"])
+        self.assertEqual(approach["time_before_collision"], 0.8)
+        self.assertEqual(approach["min_points"], 3)
         self.assertEqual(
-            yaml.safe_load(monitor_config["FootprintApproach"]["points"]),
-            [
-                [0.165, 0.165],
-                [0.165, -0.165],
-                [-0.165, -0.165],
-                [-0.165, 0.165],
-            ],
+            approach["velocity_polygons"], ["rotation", "forward", "backward"]
         )
+        expected_velocity_polygons = {
+            "rotation": {
+                "linear": (-0.05, 0.05),
+                "points": [
+                    [0.165, 0.165],
+                    [0.165, -0.165],
+                    [-0.165, -0.165],
+                    [-0.165, 0.165],
+                ],
+            },
+            "forward": {
+                "linear": (0.05, 0.5),
+                "points": [
+                    [0.30, 0.17],
+                    [0.30, -0.17],
+                    [-0.165, -0.17],
+                    [-0.165, 0.17],
+                ],
+            },
+            "backward": {
+                "linear": (-0.5, -0.05),
+                "points": [
+                    [0.165, 0.17],
+                    [0.165, -0.17],
+                    [-0.30, -0.17],
+                    [-0.30, 0.17],
+                ],
+            },
+        }
+        for name, expected in expected_velocity_polygons.items():
+            with self.subTest(velocity_polygon=name):
+                polygon = approach[name]
+                self.assertEqual(
+                    (polygon["linear_min"], polygon["linear_max"]),
+                    expected["linear"],
+                )
+                self.assertEqual(
+                    (polygon["theta_min"], polygon["theta_max"]), (-1.0, 1.0)
+                )
+                self.assertEqual(yaml.safe_load(polygon["points"]), expected["points"])
         self.assertEqual(monitor_config["observation_sources"], ["scan"])
         self.assertEqual(monitor_config["scan"]["topic"], "/scan")
 
