@@ -51,6 +51,7 @@ def generate_launch_description():
                 "use_rviz": LaunchConfiguration("use_rviz"),
                 "start_workflow_app": "false",
                 "autostart_navigation": LaunchConfiguration("autostart_navigation"),
+                "controller_profile": "diff_drive",
             }.items(),
         )]),
         ExecuteProcess(

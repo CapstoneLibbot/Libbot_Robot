@@ -808,6 +808,14 @@ class RobotRuntimeGateway:
         yaml_temp.replace(yaml_path)
         return yaml_path, pgm_path
 
+    @staticmethod
+    def _controller_profile_for_runtime(runtime_id: str) -> str:
+        return (
+            "diff_drive"
+            if str(runtime_id).strip().lower() == "sim"
+            else "mecanum"
+        )
+
     def _start_navigation_mode(
         self,
         map_path: str,
@@ -867,6 +875,9 @@ class RobotRuntimeGateway:
                 self._map = None
                 self._last_map_post = 0.0
                 self.error = None
+            controller_profile = self._controller_profile_for_runtime(
+                self.runtime_id
+            )
             self._navigation_process = subprocess.Popen(
                 [
                     "ros2", "launch", "libot_bringup", "navigation.launch.py",
@@ -876,6 +887,7 @@ class RobotRuntimeGateway:
                     "use_rviz:=false",
                     "autostart_navigation:=false",
                     f"use_sim_time:={'true' if self.use_sim_time else 'false'}",
+                    f"controller_profile:={controller_profile}",
                     "zones_enabled:=true",
                     *[
                         f"{config['launch_argument']}:={mask_paths[layer]}"

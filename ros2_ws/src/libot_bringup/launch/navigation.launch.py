@@ -2,12 +2,25 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+def _validate_controller_profile(context):
+    profile = LaunchConfiguration("controller_profile").perform(context)
+    if profile not in {"mecanum", "diff_drive"}:
+        raise RuntimeError(
+            "controller_profile must be either 'mecanum' or 'diff_drive'."
+        )
+    return []
 
 
 def generate_launch_description():
@@ -29,6 +42,15 @@ def generate_launch_description():
         "config",
         "nav2.yaml",
     )
+    controller_profile_params = PathJoinSubstitution(
+        [
+            bringup_share,
+            "config",
+            "controller_profiles",
+            LaunchConfiguration("controller_profile"),
+            "nav2.yaml",
+        ]
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -44,6 +66,11 @@ def generate_launch_description():
             "params_file",
             default_value=default_params,
             description="Absolute path to the Nav2 parameters file",
+        ),
+        DeclareLaunchArgument(
+            "controller_profile",
+            default_value="mecanum",
+            description="MPPI motion model profile: mecanum or diff_drive",
         ),
         DeclareLaunchArgument(
             "lidar_port",
@@ -87,6 +114,7 @@ def generate_launch_description():
             default_value="/ros2_ws/robot_app/main.py",
             description="Absolute path to robot_app/main.py",
         ),
+        OpaqueFunction(function=_validate_controller_profile),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(robot_launch),
             condition=IfCondition(LaunchConfiguration("use_hardware")),
@@ -213,6 +241,7 @@ def generate_launch_description():
             output="screen",
             parameters=[
                 LaunchConfiguration("params_file"),
+                controller_profile_params,
                 {"use_sim_time": LaunchConfiguration("use_sim_time")},
             ],
             remappings=[("cmd_vel", "cmd_vel_nav")],

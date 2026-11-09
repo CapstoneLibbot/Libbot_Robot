@@ -488,6 +488,9 @@ class Nav2ConfigurationTests(unittest.TestCase):
         self.assertIn('"behavior_trees", "navigate_to_pose.xml"', launch)
         self.assertIn('"behavior_trees", "navigate_through_poses.xml"', launch)
         self.assertIn('LaunchConfiguration("autostart_navigation")', launch)
+        self.assertIn('LaunchConfiguration("controller_profile")', launch)
+        self.assertIn('default_value="mecanum"', launch)
+        self.assertIn('"diff_drive"', launch)
         self.assertIn('"autostart": ParameterValue(', launch)
         self.assertIn('"bt_navigator"', launch)
         self.assertIn("DIRECTORY launch config behavior_trees", cmake)
@@ -503,6 +506,44 @@ class Nav2ConfigurationTests(unittest.TestCase):
             config,
         )
 
+        simulation_launch = (BRINGUP / "launch" / "simulation_navigation.launch.py").read_text(encoding="utf-8")
+        self.assertIn('"controller_profile": "diff_drive"', simulation_launch)
+
+    def test_mppi_profiles_match_simulation_and_mecanum_kinematics(self):
+        config = yaml.safe_load(
+            (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
+        )
+        controller = config["controller_server"]["ros__parameters"]
+        follow_path = controller["FollowPath"]
+        self.assertEqual(
+            follow_path["plugin"], "nav2_mppi_controller::MPPIController"
+        )
+        self.assertEqual(controller["controller_frequency"], 20.0)
+        self.assertEqual(follow_path["model_dt"], 0.05)
+        self.assertEqual(follow_path["time_steps"], 40)
+        self.assertEqual(follow_path["batch_size"], 500)
+        self.assertEqual(follow_path["iteration_count"], 1)
+        self.assertEqual(follow_path["vx_min"], 0.0)
+        self.assertEqual(follow_path["motion_model"], "DiffDrive")
+        self.assertNotIn("desired_linear_vel", follow_path)
+        self.assertNotIn("lookahead_dist", follow_path)
+
+        mecanum = yaml.safe_load(
+            (BRINGUP / "config" / "controller_profiles" / "mecanum" / "nav2.yaml")
+            .read_text(encoding="utf-8")
+        )["controller_server"]["ros__parameters"]["FollowPath"]
+        self.assertEqual(mecanum["motion_model"], "Omni")
+        self.assertEqual(mecanum["vy_max"], 0.15)
+        self.assertEqual(mecanum["ay_max"], 0.5)
+        self.assertEqual(mecanum["ay_min"], -0.5)
+
+        diff_drive = yaml.safe_load(
+            (BRINGUP / "config" / "controller_profiles" / "diff_drive" / "nav2.yaml")
+            .read_text(encoding="utf-8")
+        )["controller_server"]["ros__parameters"]["FollowPath"]
+        self.assertEqual(diff_drive["motion_model"], "DiffDrive")
+        self.assertEqual(diff_drive["vy_max"], 0.0)
+
     def test_nav2_tuning_matches_replanning_motion_policy(self):
         config = (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
         expected = (
@@ -510,24 +551,31 @@ class Nav2ConfigurationTests(unittest.TestCase):
             "plugin: nav2_controller::PoseProgressChecker",
             "required_movement_radius: 0.05",
             "required_movement_angle: 0.10",
-            "movement_time_allowance: 3.0",
-            "failure_tolerance: 1.0",
+            "movement_time_allowance: 5.0",
+            "failure_tolerance: 5.0",
             "stateful: true",
-            "xy_goal_tolerance: 0.10",
-            "yaw_goal_tolerance: 0.20",
-            "rotate_to_heading_angular_vel: 0.5",
-            "rotate_to_heading_min_angle: 0.524",
-            "max_angular_accel: 4.0",
+            "xy_goal_tolerance: 0.15",
+            "yaw_goal_tolerance: 0.35",
+            "plugin: nav2_mppi_controller::MPPIController",
+            "time_steps: 40",
+            "model_dt: 0.05",
+            "batch_size: 500",
+            "vx_max: 0.25",
+            "vx_min: 0.0",
+            "vy_max: 0.0",
+            "wz_max: 0.5",
+            "motion_model: DiffDrive",
             "max_rotational_vel: 0.5",
             "min_rotational_vel: 0.2",
             "rotational_acc_lim: 2.0",
             "- -4.0",
-            "allow_reversing: false",
             "allow_unknown: false",
         )
         for value in expected:
             with self.subTest(setting=value):
                 self.assertIn(value, config)
+        self.assertNotIn("nav2_regulated_pure_pursuit_controller", config)
+        self.assertNotIn("rotate_to_heading_angular_vel", config)
         behavior_config = config.split("behavior_server:", 1)[1].split("waypoint_follower:", 1)[0]
         self.assertIn("- spin", behavior_config)
         self.assertIn("- backup", behavior_config)
@@ -608,52 +656,53 @@ class Nav2ConfigurationTests(unittest.TestCase):
         approach = monitor_config["FootprintApproach"]
         self.assertEqual(approach["type"], "velocity_polygon")
         self.assertEqual(approach["action_type"], "approach")
-        self.assertFalse(approach["holonomic"])
+        self.assertTrue(approach["holonomic"])
         self.assertEqual(approach["time_before_collision"], 0.8)
         self.assertEqual(approach["min_points"], 3)
         self.assertEqual(
-            approach["velocity_polygons"], ["rotation", "forward", "backward"]
+            approach["velocity_polygons"],
+            [
+                "rotation",
+                "forward",
+                "forward_left",
+                "left",
+                "backward_left",
+                "backward",
+                "backward_right",
+                "right",
+                "forward_right",
+                "stopped",
+            ],
         )
-        expected_velocity_polygons = {
-            "rotation": {
-                "linear": (-0.05, 0.05),
-                "points": [
-                    [0.165, 0.165],
-                    [0.165, -0.165],
-                    [-0.165, -0.165],
-                    [-0.165, 0.165],
-                ],
-            },
-            "forward": {
-                "linear": (0.05, 0.5),
-                "points": [
-                    [0.30, 0.17],
-                    [0.30, -0.17],
-                    [-0.165, -0.17],
-                    [-0.165, 0.17],
-                ],
-            },
-            "backward": {
-                "linear": (-0.5, -0.05),
-                "points": [
-                    [0.165, 0.17],
-                    [0.165, -0.17],
-                    [-0.30, -0.17],
-                    [-0.30, 0.17],
-                ],
-            },
-        }
-        for name, expected in expected_velocity_polygons.items():
+        self.assertTrue(
+            all(
+                name in approach
+                for name in (
+                    "forward_left",
+                    "left",
+                    "backward_left",
+                    "backward_right",
+                    "right",
+                    "forward_right",
+                )
+            )
+        )
+        self.assertEqual(approach["rotation"]["linear_min"], 0.0)
+        self.assertEqual(approach["rotation"]["linear_max"], 0.03)
+        self.assertEqual(approach["stopped"]["linear_min"], 0.0)
+        self.assertEqual(approach["stopped"]["linear_max"], 1.0)
+        for name in approach["velocity_polygons"][1:-1]:
             with self.subTest(velocity_polygon=name):
                 polygon = approach[name]
                 self.assertEqual(
-                    (polygon["linear_min"], polygon["linear_max"]),
-                    expected["linear"],
+                    (polygon["linear_min"], polygon["linear_max"]), (0.03, 0.30)
                 )
                 self.assertEqual(
-                    (polygon["theta_min"], polygon["theta_max"]), (-1.0, 1.0)
+                    (polygon["theta_min"], polygon["theta_max"]), (-0.65, 0.65)
                 )
-                self.assertEqual(yaml.safe_load(polygon["points"]), expected["points"])
+                self.assertIn("direction_start_angle", polygon)
+                self.assertIn("direction_end_angle", polygon)
+                self.assertGreaterEqual(len(yaml.safe_load(polygon["points"])), 4)
         self.assertEqual(monitor_config["observation_sources"], ["scan"])
         self.assertEqual(monitor_config["scan"]["topic"], "/scan")
 
