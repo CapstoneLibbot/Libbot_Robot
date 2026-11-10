@@ -624,6 +624,7 @@ class RobotRuntimeGateway:
                 self._map = None
                 self.localization_state = "UNLOCALIZED"
                 self._pose_map_path = None
+                self.error = None
             self._mapping_process = subprocess.Popen(
                 [
                     "ros2", "launch", "libot_bringup", "mapping.launch.py",
@@ -657,7 +658,17 @@ class RobotRuntimeGateway:
                     f"{self.backend_url}/api/robot-runtimes/real/maps/latest"
                 )
                 if not isinstance(latest, dict) or not latest.get("id"):
-                    raise RuntimeError("Backend does not have a saved robot map yet.")
+                    # No saved map is the normal state before the first mapping
+                    # session. Wait quietly instead of surfacing it as a runtime
+                    # error in the mapping UI.
+                    with self._lock:
+                        self.navigation_mode_state = "FETCHING_MAP"
+                        self.navigation_ready_state = False
+                        self.error = None
+                    deadline = time.monotonic() + self.AUTO_NAVIGATION_RETRY_SEC
+                    while self._running and time.monotonic() < deadline:
+                        time.sleep(0.1)
+                    continue
                 map_id = str(latest["id"])
                 saved = self._get_backend_json(f"{self.backend_url}/api/maps/{map_id}")
                 grid = self._grid_from_saved_map(saved)
@@ -701,7 +712,8 @@ class RobotRuntimeGateway:
     def _get_backend_json(url: str) -> Any:
         req = request.Request(url, headers={"Accept": "application/json"})
         with request.urlopen(req, timeout=10.0) as response:
-            return json.loads(response.read().decode("utf-8"))
+            body = response.read().decode("utf-8").strip()
+            return json.loads(body) if body else None
 
     @staticmethod
     def _grid_from_saved_map(saved: Any) -> Dict[str, Any]:
