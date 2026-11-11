@@ -113,7 +113,7 @@ controller_server:
       vx_max: 0.25
       vx_min: 0.0
       vy_max: 0.0
-      wz_max: 0.5
+      wz_max: 0.7
       ax_max: 0.6
       ax_min: -0.6
       ay_max: 0.0

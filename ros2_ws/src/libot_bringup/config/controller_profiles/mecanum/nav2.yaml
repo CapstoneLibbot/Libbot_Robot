@@ -3,6 +3,6 @@ controller_server:
     FollowPath:
       motion_model: Omni
       vy_std: 0.1
-      vy_max: 0.15
+      vy_max: 0.2
       ay_max: 0.5
       ay_min: -0.5
