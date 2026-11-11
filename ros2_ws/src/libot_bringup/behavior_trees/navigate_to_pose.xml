@@ -7,9 +7,11 @@
           <RecoveryNode number_of_retries="1" name="ComputePathToPose">
             <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"
                                error_code_id="{compute_path_error_code}"/>
-            <Sequence name="WaitBeforePlannerRetry">
+            <Sequence name="ClearGlobalCostmapOnPlannerFailure">
               <WouldAPlannerRecoveryHelp error_code="{compute_path_error_code}"/>
-              <!-- Preserve the obstacle in the global costmap before replanning. -->
+              <ClearEntireCostmap name="ClearGlobalCostmapContext"
+                                  service_name="global_costmap/clear_entirely_global_costmap"
+                                  server_timeout="5000"/>
               <Wait wait_duration="0.5"/>
             </Sequence>
           </RecoveryNode>
@@ -19,8 +21,8 @@
                       error_code_id="{follow_path_error_code}"/>
           <Sequence name="BackUpAndReplanOnControllerFailure">
             <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
-            <BackUp backup_dist="0.20" backup_speed="0.10"
-                    time_allowance="5.0"/>
+            <BackUp backup_dist="0.20" backup_speed="0.12"
+                    time_allowance="4.0"/>
             <Wait wait_duration="0.5"/>
             <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"
                                error_code_id="{compute_path_error_code}"/>
@@ -35,9 +37,19 @@
         <ReactiveFallback name="NavigateRecoveryFallback">
           <GoalUpdated/>
           <RoundRobin name="NavigateRecoveryActions">
-            <!-- Keep the blind rear recovery short; collision checks stay enabled. -->
-            <BackUp backup_dist="0.15" backup_speed="0.10"
-                    time_allowance="5.0"/>
+            <Sequence name="TurnAndRefreshSensors">
+              <Fallback name="TurnToFreeSide">
+                <Spin spin_dist="1.5708" time_allowance="6.0"/>
+                <Spin spin_dist="-1.5708" time_allowance="6.0"/>
+              </Fallback>
+              <Wait wait_duration="0.5"/>
+            </Sequence>
+            <Sequence name="ClearLocalCostmapAndRefresh">
+              <ClearEntireCostmap name="ClearLocalCostmap"
+                                  service_name="local_costmap/clear_entirely_local_costmap"
+                                  server_timeout="5000"/>
+              <Wait wait_duration="0.5"/>
+            </Sequence>
             <Wait wait_duration="2.0"/>
           </RoundRobin>
         </ReactiveFallback>

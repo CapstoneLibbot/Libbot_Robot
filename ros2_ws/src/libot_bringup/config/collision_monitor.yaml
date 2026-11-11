@@ -12,42 +12,20 @@ collision_monitor:
     stop_pub_timeout: 1.0
     enable_stamped_cmd_vel: false
 
-
+    # Physical robot is 0.30 x 0.30 m. The 0.015 m margin on each side gives
+    # an effective protected footprint of 0.33 x 0.33 m.
     polygons:
     - FootprintApproach
     FootprintApproach:
-      type: velocity_polygon
+      type: polygon
+      points: '[[0.165, 0.165], [0.165, -0.165], [-0.165, -0.165], [-0.165, 0.165]]'
       action_type: approach
-      time_before_collision: 0.8
+      time_before_collision: 1.0
       simulation_time_step: 0.05
-      min_points: 3
+      min_points: 1
       visualize: true
       polygon_pub_topic: /collision_monitor/footprint_approach
       enabled: true
-      holonomic: false
-      velocity_polygons:
-      - rotation
-      - forward
-      - backward
-      rotation:
-        # Nav2 footprint is +/-0.165 m after padding; add 0.05 m on every side.
-        points: '[[0.215, 0.215], [0.215, -0.215], [-0.215, -0.215], [-0.215, 0.215]]'
-        linear_min: -0.01
-        linear_max: 0.01
-        theta_min: -1.0
-        theta_max: 1.0
-      forward:
-        points: '[[0.215, 0.215], [0.215, -0.215], [-0.215, -0.215], [-0.215, 0.215]]'
-        linear_min: 0.01
-        linear_max: 0.5
-        theta_min: -1.0
-        theta_max: 1.0
-      backward:
-        points: '[[0.215, 0.215], [0.215, -0.215], [-0.215, -0.215], [-0.215, 0.215]]'
-        linear_min: -0.5
-        linear_max: -0.01
-        theta_min: -1.0
-        theta_max: 1.0
 
     observation_sources:
     - scan
