@@ -47,7 +47,7 @@ collision_monitor:
       forward:
         points: '[[0.405, 0.255], [0.405, -0.255], [-0.165, -0.255], [-0.165, 0.255]]'
         linear_min: 0.03
-        linear_max: 0.30
+        linear_max: 0.5
         direction_start_angle: -0.392699
         direction_end_angle: 0.392699
         theta_min: -0.65
