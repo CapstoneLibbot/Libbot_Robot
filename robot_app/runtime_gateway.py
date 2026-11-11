@@ -1284,6 +1284,12 @@ class RobotRuntimeGateway:
                             self._navigation_lifecycle_started = True
                             self._navigation_lifecycle_paused = False
                         lifecycle_started = True
+                    elif all(state == 2 for state in states.values()):
+                        # Nav2 may already have been configured by its lifecycle
+                        # manager (or paused outside this gateway). Once AMCL is
+                        # stable, resume the configured nodes instead of
+                        # leaving navigation stuck in INACTIVE.
+                        command = "RESUME"
                     elif any(state in {2, 3, 4} for state in states.values()):
                         self._fail_localization_attempt(
                             attempt_id,
