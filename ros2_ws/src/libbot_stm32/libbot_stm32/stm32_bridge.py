@@ -12,6 +12,7 @@ from std_msgs.msg import String
 from tf2_ros import TransformBroadcaster
 
 from libbot_stm32.protocol import parse_imu_line, parse_range_line
+from libbot_stm32.velocity_limits import clamp_with_minimum
 
 
 class STM32Bridge(Node):
@@ -40,6 +41,9 @@ class STM32Bridge(Node):
     STM32_MAX_VX_MPS = 1.0
     STM32_MAX_VY_MPS = 1.0
     STM32_MAX_WZ_RAD_S = 3.0
+    STM32_MIN_VX_MPS = 0.2
+    STM32_MIN_VY_MPS = 0.2
+    STM32_MIN_WZ_RAD_S = 0.7
     MAX_RX_BYTES = 8192
     MAX_LINE_BYTES = 256
 
@@ -105,9 +109,15 @@ class STM32Bridge(Node):
 
     def send_velocity(self, vx, vy, wz):
         requested = (vx, vy, wz)
-        vx = max(-self.STM32_MAX_VX_MPS, min(self.STM32_MAX_VX_MPS, vx))
-        vy = max(-self.STM32_MAX_VY_MPS, min(self.STM32_MAX_VY_MPS, vy))
-        wz = max(-self.STM32_MAX_WZ_RAD_S, min(self.STM32_MAX_WZ_RAD_S, wz))
+        vx = clamp_with_minimum(
+            vx, self.STM32_MIN_VX_MPS, self.STM32_MAX_VX_MPS
+        )
+        vy = clamp_with_minimum(
+            vy, self.STM32_MIN_VY_MPS, self.STM32_MAX_VY_MPS
+        )
+        wz = clamp_with_minimum(
+            wz, self.STM32_MIN_WZ_RAD_S, self.STM32_MAX_WZ_RAD_S
+        )
 
         cmd = (
             f'VEL,{int(vx * 1000.0)},'
@@ -148,7 +158,7 @@ class STM32Bridge(Node):
             )
             return
         self.last_cmd_monotonic = time.monotonic()
-        self.command_is_active = any(abs(v) > 1e-6 for v in (vx, vy, wz))
+        self.command_is_active = any(v != 0.0 for v in (vx, vy, wz))
         self.send_velocity(vx, vy, wz)
 
     def command_watchdog(self):
