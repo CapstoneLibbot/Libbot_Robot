@@ -12,7 +12,7 @@ from std_msgs.msg import String
 from tf2_ros import TransformBroadcaster
 
 from libbot_stm32.protocol import parse_imu_line, parse_range_line
-from libbot_stm32.velocity_limits import clamp_with_minimum
+from libbot_stm32.velocity_limits import clamp_body_velocity
 
 
 class STM32Bridge(Node):
@@ -109,14 +109,20 @@ class STM32Bridge(Node):
 
     def send_velocity(self, vx, vy, wz):
         requested = (vx, vy, wz)
-        vx = clamp_with_minimum(
-            vx, self.STM32_MIN_VX_MPS, self.STM32_MAX_VX_MPS
-        )
-        vy = clamp_with_minimum(
-            vy, self.STM32_MIN_VY_MPS, self.STM32_MAX_VY_MPS
-        )
-        wz = clamp_with_minimum(
-            wz, self.STM32_MIN_WZ_RAD_S, self.STM32_MAX_WZ_RAD_S
+        vx, vy, wz = clamp_body_velocity(
+            vx,
+            vy,
+            wz,
+            minimums=(
+                self.STM32_MIN_VX_MPS,
+                self.STM32_MIN_VY_MPS,
+                self.STM32_MIN_WZ_RAD_S,
+            ),
+            maximums=(
+                self.STM32_MAX_VX_MPS,
+                self.STM32_MAX_VY_MPS,
+                self.STM32_MAX_WZ_RAD_S,
+            ),
         )
 
         cmd = (
