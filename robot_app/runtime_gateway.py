@@ -893,6 +893,7 @@ class RobotRuntimeGateway:
             controller_profile = self._controller_profile_for_runtime(
                 self.runtime_id
             )
+            defer_navigation_activation = not self.use_sim_time
             self._navigation_process = subprocess.Popen(
                 [
                     "ros2", "launch", "libot_bringup", "navigation.launch.py",
@@ -900,7 +901,10 @@ class RobotRuntimeGateway:
                     "use_hardware:=false",
                     "start_workflow_app:=false",
                     "use_rviz:=false",
-                    "autostart_navigation:=true",
+                    # On the real robot, wait for AMCL's initial-pose TF
+                    # before activating costmaps. Simulation keeps its
+                    # standalone autostart behavior.
+                    f"autostart_navigation:={'false' if defer_navigation_activation else 'true'}",
                     f"use_sim_time:={'true' if self.use_sim_time else 'false'}",
                     f"controller_profile:={controller_profile}",
                     "zones_enabled:=true",
@@ -990,10 +994,15 @@ class RobotRuntimeGateway:
                 return self._failure("Nav2 map server did not publish /map before startup timed out.")
 
             remaining_startup = max(0.0, startup_deadline - time.monotonic())
-            if not self._wait_for_navigation_nodes_active(timeout_sec=remaining_startup):
+            lifecycle_ready = (
+                self._wait_for_navigation_nodes_unconfigured(timeout_sec=remaining_startup)
+                if defer_navigation_activation
+                else self._wait_for_navigation_nodes_active(timeout_sec=remaining_startup)
+            )
+            if not lifecycle_ready:
                 states = self._navigation_lifecycle_states(timeout_sec=1.0)
                 detail = self._format_lifecycle_states(states)
-                error = f"NAV2_NODES_NOT_ACTIVE: {detail}"
+                error = f"NAV2_LIFECYCLE_NOT_READY: {detail}"
                 print(error, flush=True)
                 self._terminate_process(self._navigation_process)
                 self._navigation_process = None
@@ -1004,14 +1013,14 @@ class RobotRuntimeGateway:
                     self._navigation_map_path = None
                     self.error = error
                 return self._failure(
-                    "Nav2 launched, but its lifecycle nodes did not all become active: "
+                    "Nav2 launched, but its lifecycle servers did not reach the expected startup state: "
                     f"{detail}. The failed launch was stopped; check the robot container logs, then retry."
                 )
 
             with self._lock:
                 self._navigation_map_path = str(path)
                 self._active_map_id = str(map_id) if map_id else None
-                self._navigation_lifecycle_started = True
+                self._navigation_lifecycle_started = not defer_navigation_activation
                 self._navigation_lifecycle_paused = False
                 self.navigation_ready_state = self.use_sim_time
                 self.navigation_mode_state = "READY" if self.use_sim_time else "WAITING_INITIAL_POSE"
@@ -1120,10 +1129,10 @@ class RobotRuntimeGateway:
         if (
             self._navigation_process is None
             or self._navigation_process.poll() is not None
-            or not self._navigation_lifecycle_started
+            or not self._navigation_map_path
         ):
             return self._failure(
-                "Nav2 lifecycle nodes are not active. Start Nav2 successfully before setting the initial pose."
+                "Load a map and start the navigation mode before setting the initial pose."
             )
         from geometry_msgs.msg import PoseWithCovarianceStamped
 
@@ -1449,6 +1458,19 @@ class RobotRuntimeGateway:
                 timeout_sec=min(1.0, remaining)
             )
             if all(state == 3 for state in states.values()):
+                return True
+            time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+        return False
+
+    def _wait_for_navigation_nodes_unconfigured(self, timeout_sec: float) -> bool:
+        """Wait for Nav2 lifecycle services before initial-pose localization."""
+        deadline = time.monotonic() + max(0.0, timeout_sec)
+        while self._running and time.monotonic() < deadline:
+            remaining = max(0.0, deadline - time.monotonic())
+            states = self._navigation_lifecycle_states(
+                timeout_sec=min(1.0, remaining)
+            )
+            if all(state == 1 for state in states.values()):
                 return True
             time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
         return False
@@ -2458,7 +2480,7 @@ class RobotRuntimeGateway:
             navigation_active = (
                 self._navigation_process is not None
                 and self._navigation_process.poll() is None
-                and self._navigation_lifecycle_started
+                and self._navigation_map_path is not None
             )
             if self.use_sim_time and self._action_client is not None:
                 self.navigation_ready_state = self._action_client.server_is_ready()
