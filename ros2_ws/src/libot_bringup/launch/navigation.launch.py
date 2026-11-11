@@ -106,7 +106,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "autostart_navigation",
-            default_value="false",
+            default_value="true",
             description="Automatically activate the navigation lifecycle nodes",
         ),
         DeclareLaunchArgument(

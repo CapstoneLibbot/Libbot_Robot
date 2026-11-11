@@ -22,7 +22,7 @@ def generate_launch_description():
         DeclareLaunchArgument("backend_url", default_value="http://127.0.0.1:5205"),
         DeclareLaunchArgument("use_rviz", default_value="false"),
         DeclareLaunchArgument("headless", default_value="true"),
-        DeclareLaunchArgument("autostart_navigation", default_value="false"),
+        DeclareLaunchArgument("autostart_navigation", default_value="true"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(simulation),
             launch_arguments={"headless": LaunchConfiguration("headless")}.items(),
