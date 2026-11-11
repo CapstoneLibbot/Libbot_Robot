@@ -47,71 +47,71 @@ collision_monitor:
       forward:
         points: '[[0.30, 0.255], [0.30, -0.255], [-0.165, -0.255], [-0.165, 0.255]]'
         linear_min: 0.03
-        linear_max: 0.5
+        linear_max: 0.8
         direction_start_angle: -0.392699
         direction_end_angle: 0.392699
         theta_min: -0.65
         theta_max: 0.65
       forward_left:
-        points: '[[0.30, 0.405], [0.30, -0.165], [-0.165, -0.165], [-0.165, 0.405]]'
+        points: '[[0.30, 0.30], [0.30, -0.165], [-0.165, -0.165], [-0.165, 0.30]]'
         linear_min: 0.03
-        linear_max: 0.30
+        linear_max: 0.8
         direction_start_angle: 0.392699
         direction_end_angle: 1.178097
         theta_min: -0.65
         theta_max: 0.65
       left:
-        points: '[[0.255, 0.405], [0.255, -0.165], [-0.255, -0.165], [-0.255, 0.405]]'
+        points: '[[0.255, 0.30], [0.255, -0.165], [-0.255, -0.165], [-0.255, 0.30]]'
         linear_min: 0.03
-        linear_max: 0.30
+        linear_max: 0.8
         direction_start_angle: 1.178097
         direction_end_angle: 1.963495
         theta_min: -0.65
         theta_max: 0.65
       backward_left:
-        points: '[[0.165, 0.405], [0.165, -0.255], [-0.405, -0.255], [-0.405, 0.405]]'
+        points: '[[0.165, 0.30], [0.165, -0.255], [-0.30, -0.255], [-0.30, 0.30]]'
         linear_min: 0.03
-        linear_max: 0.30
+        linear_max: 0.8
         direction_start_angle: 1.963495
         direction_end_angle: 2.748894
         theta_min: -0.65
         theta_max: 0.65
       backward:
-        points: '[[0.165, 0.255], [0.165, -0.255], [-0.405, -0.255], [-0.405, 0.255]]'
+        points: '[[0.165, 0.255], [0.165, -0.255], [-0.30, -0.255], [-0.30, 0.255]]'
         linear_min: 0.03
-        linear_max: 0.30
+        linear_max: 0.8
         direction_start_angle: 2.748894
         direction_end_angle: -2.748894
         theta_min: -0.65
         theta_max: 0.65
       backward_right:
-        points: '[[0.165, 0.165], [0.165, -0.405], [-0.405, -0.405], [-0.405, 0.165]]'
+        points: '[[0.165, 0.165], [0.165, -0.30], [-0.30, -0.30], [-0.30, 0.165]]'
         linear_min: 0.03
-        linear_max: 0.30
+        linear_max: 0.8
         direction_start_angle: -2.748894
         direction_end_angle: -1.963495
         theta_min: -0.65
         theta_max: 0.65
       right:
-        points: '[[0.255, 0.165], [0.255, -0.405], [-0.255, -0.405], [-0.255, 0.165]]'
+        points: '[[0.255, 0.165], [0.255, -0.30], [-0.255, -0.30], [-0.255, 0.165]]'
         linear_min: 0.03
-        linear_max: 0.30
+        linear_max: 0.8
         direction_start_angle: -1.963495
         direction_end_angle: -1.178097
         theta_min: -0.65
         theta_max: 0.65
       forward_right:
-        points: '[[0.30, 0.165], [0.30, -0.405], [-0.165, -0.405], [-0.165, 0.165]]'
+        points: '[[0.30, 0.165], [0.30, -0.30], [-0.165, -0.30], [-0.165, 0.165]]'
         linear_min: 0.03
-        linear_max: 0.30
+        linear_max: 0.8
         direction_start_angle: -1.178097
         direction_end_angle: -0.392699
         theta_min: -0.65
         theta_max: 0.65
       stopped:
-        points: '[[0.75, 0.75], [0.75, -0.75], [-0.75, -0.75], [-0.75, 0.75]]'
+        points: '[[0.25, 0.25], [0.25, -0.25], [-0.25, -0.25], [-0.25, 0.25]]'
         linear_min: 0.0
-        linear_max: 1.0
+        linear_max: 0.03
         direction_start_angle: -3.14159
         direction_end_angle: 3.14159
         theta_min: -1.0
