@@ -30,19 +30,20 @@ collision_monitor:
       - forward
       - backward
       rotation:
-        points: '[[0.165, 0.165], [0.165, -0.165], [-0.165, -0.165], [-0.165, 0.165]]'
+        # Nav2 footprint is +/-0.165 m after padding; add 0.05 m on every side.
+        points: '[[0.215, 0.215], [0.215, -0.215], [-0.215, -0.215], [-0.215, 0.215]]'
         linear_min: -0.01
         linear_max: 0.01
         theta_min: -1.0
         theta_max: 1.0
       forward:
-        points: '[[0.30, 0.17], [0.30, -0.17], [-0.165, -0.17], [-0.165, 0.17]]'
+        points: '[[0.215, 0.215], [0.215, -0.215], [-0.215, -0.215], [-0.215, 0.215]]'
         linear_min: 0.01
         linear_max: 0.5
         theta_min: -1.0
         theta_max: 1.0
       backward:
-        points: '[[0.165, 0.17], [0.165, -0.17], [-0.30, -0.17], [-0.30, 0.17]]'
+        points: '[[0.215, 0.215], [0.215, -0.215], [-0.215, -0.215], [-0.215, 0.215]]'
         linear_min: -0.5
         linear_max: -0.01
         theta_min: -1.0
