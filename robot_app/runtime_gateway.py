@@ -843,7 +843,12 @@ class RobotRuntimeGateway:
         ):
             return self._failure("The selected map YAML is not available on the robot.")
         if self._navigation_process is not None and self._navigation_process.poll() is None:
-            return self._failure("Nav2 is already running.")
+            with self._lock:
+                previous_start_failed = self.navigation_mode_state == "ERROR"
+            if not previous_start_failed:
+                return self._failure("Nav2 is already running.")
+            self._terminate_process(self._navigation_process)
+            self._navigation_process = None
         try:
             try:
                 normalized_zones = self._normalize_navigation_zones(zones or [])
@@ -990,12 +995,17 @@ class RobotRuntimeGateway:
                 detail = self._format_lifecycle_states(states)
                 error = f"NAV2_NODES_NOT_ACTIVE: {detail}"
                 print(error, flush=True)
+                self._terminate_process(self._navigation_process)
+                self._navigation_process = None
                 with self._lock:
                     self.navigation_mode_state = "ERROR"
+                    self._navigation_lifecycle_started = False
+                    self._navigation_lifecycle_paused = False
+                    self._navigation_map_path = None
                     self.error = error
                 return self._failure(
                     "Nav2 launched, but its lifecycle nodes did not all become active: "
-                    f"{detail}. The launch is left running for diagnosis."
+                    f"{detail}. The failed launch was stopped; check the robot container logs, then retry."
                 )
 
             with self._lock:
@@ -1107,8 +1117,14 @@ class RobotRuntimeGateway:
                 "localization_state": self.localization_state,
                 "message": "SIM uses the Gazebo ground-truth pose.",
             }
-        if self._navigation_process is None or self._navigation_process.poll() is not None:
-            return self._failure("Start Nav2 and load a map before setting the initial pose.")
+        if (
+            self._navigation_process is None
+            or self._navigation_process.poll() is not None
+            or not self._navigation_lifecycle_started
+        ):
+            return self._failure(
+                "Nav2 lifecycle nodes are not active. Start Nav2 successfully before setting the initial pose."
+            )
         from geometry_msgs.msg import PoseWithCovarianceStamped
 
         x, y, yaw = values
@@ -2439,7 +2455,11 @@ class RobotRuntimeGateway:
     def _post_telemetry(self) -> None:
         with self._lock:
             mapping_active = self._mapping_process is not None and self._mapping_process.poll() is None
-            navigation_active = self._navigation_process is not None and self._navigation_process.poll() is None
+            navigation_active = (
+                self._navigation_process is not None
+                and self._navigation_process.poll() is None
+                and self._navigation_lifecycle_started
+            )
             if self.use_sim_time and self._action_client is not None:
                 self.navigation_ready_state = self._action_client.server_is_ready()
                 self.navigation_mode_state = "READY" if self.navigation_ready_state else "FETCHING_MAP"
