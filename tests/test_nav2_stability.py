@@ -397,7 +397,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertEqual(len(root.findall(".//PipelineSequence")), 1)
                 rate_controller = root.find(".//PipelineSequence/RateController")
                 self.assertIsNotNone(rate_controller)
-                self.assertEqual(rate_controller.attrib["hz"], "4.0")
+                self.assertEqual(rate_controller.attrib["hz"], "1.0")
                 compute = computes[0]
                 follow = root.find(".//FollowPath")
                 self.assertEqual(compute.attrib[goal_input], "{" + goal_input + "}")
@@ -417,7 +417,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertNotIn("SequenceWithMemory", tags)
                 rate = root.find(".//RateController")
                 self.assertIsNotNone(rate)
-                self.assertEqual(rate.attrib["hz"], "4.0")
+                self.assertEqual(rate.attrib["hz"], "1.0")
                 backups = root.findall(".//BackUp")
                 expected_backup_count = 2 if name == "navigate_to_pose.xml" else 1
                 self.assertEqual(len(backups), expected_backup_count)
