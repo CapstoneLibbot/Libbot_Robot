@@ -142,6 +142,7 @@ controller_server:
       - PathAlignCritic
       - PathAngleCritic
       - PathFollowCritic
+      - PathAngleCritic
       - TwirlingCritic
       OmniConstraintCritic:
         enabled: true
@@ -198,6 +199,14 @@ controller_server:
         cost_weight: 5.0
         offset_from_furthest: 5
         threshold_to_consider: 1.4
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 2.2
+        offset_from_furthest: 4
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 0.785
+        mode: 0
       TwirlingCritic:
         enabled: true
         twirling_cost_power: 1
