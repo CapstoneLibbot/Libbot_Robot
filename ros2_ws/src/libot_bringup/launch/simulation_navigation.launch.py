@@ -16,6 +16,7 @@ def generate_launch_description():
     layout_file = os.path.join(description_share, "config", "library_layout.json")
     with open(layout_file, encoding="utf-8") as stream:
         robot_spawn = json.load(stream)["robotSpawn"]
+    default_world = os.path.join(description_share, "worlds", "library.sdf")
     simulation = os.path.join(bringup_share, "launch", "simulation.launch.py")
     navigation = os.path.join(bringup_share, "launch", "navigation.launch.py")
     collision_monitor = os.path.join(
@@ -26,6 +27,11 @@ def generate_launch_description():
     )
     return LaunchDescription([
         DeclareLaunchArgument("map", default_value="/ros2_ws/maps/library_sim.yaml"),
+        DeclareLaunchArgument("world", default_value=default_world),
+        DeclareLaunchArgument("spawn_x", default_value=str(robot_spawn["x"])),
+        DeclareLaunchArgument("spawn_y", default_value=str(robot_spawn["y"])),
+        DeclareLaunchArgument("spawn_z", default_value=str(robot_spawn["z"])),
+        DeclareLaunchArgument("spawn_yaw", default_value=str(robot_spawn["yaw"])),
         DeclareLaunchArgument("backend_url", default_value="http://127.0.0.1:5205"),
         DeclareLaunchArgument("use_rviz", default_value="false"),
         DeclareLaunchArgument("headless", default_value="true"),
@@ -34,7 +40,14 @@ def generate_launch_description():
         DeclareLaunchArgument("foxglove_port", default_value="8765"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(simulation),
-            launch_arguments={"headless": LaunchConfiguration("headless")}.items(),
+            launch_arguments={
+                "headless": LaunchConfiguration("headless"),
+                "world": LaunchConfiguration("world"),
+                "spawn_x": LaunchConfiguration("spawn_x"),
+                "spawn_y": LaunchConfiguration("spawn_y"),
+                "spawn_z": LaunchConfiguration("spawn_z"),
+                "spawn_yaw": LaunchConfiguration("spawn_yaw"),
+            }.items(),
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(collision_monitor),
@@ -53,10 +66,10 @@ def generate_launch_description():
             executable="static_transform_publisher",
             name="simulation_map_to_odom",
             arguments=[
-                "--x", str(robot_spawn["x"]),
-                "--y", str(robot_spawn["y"]),
+                "--x", LaunchConfiguration("spawn_x"),
+                "--y", LaunchConfiguration("spawn_y"),
                 "--z", "0.0",
-                "--yaw", str(robot_spawn["yaw"]), "--pitch", "0.0", "--roll", "0.0",
+                "--yaw", LaunchConfiguration("spawn_yaw"), "--pitch", "0.0", "--roll", "0.0",
                 "--frame-id", "map", "--child-frame-id", "odom",
             ],
             parameters=[{"use_sim_time": True}],

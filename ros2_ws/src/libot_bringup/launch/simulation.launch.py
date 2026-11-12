@@ -39,6 +39,11 @@ def generate_launch_description():
             default_value="true",
             description="Run Gazebo without its GUI when true",
         ),
+        DeclareLaunchArgument("world", default_value=world_file),
+        DeclareLaunchArgument("spawn_x", default_value=str(robot_spawn["x"])),
+        DeclareLaunchArgument("spawn_y", default_value=str(robot_spawn["y"])),
+        DeclareLaunchArgument("spawn_z", default_value=str(robot_spawn["z"])),
+        DeclareLaunchArgument("spawn_yaw", default_value=str(robot_spawn["yaw"])),
         Node(
             package="robot_state_publisher",
             executable="robot_state_publisher",
@@ -55,7 +60,7 @@ def generate_launch_description():
         IncludeLaunchDescription(
             gz_launch,
             launch_arguments={
-                "gz_args": ["-s -r -v 4 ", world_file],
+                "gz_args": ["-s -r -v 4 ", LaunchConfiguration("world")],
                 "on_exit_shutdown": "true",
             }.items(),
             condition=IfCondition(LaunchConfiguration("headless")),
@@ -63,7 +68,7 @@ def generate_launch_description():
         IncludeLaunchDescription(
             gz_launch,
             launch_arguments={
-                "gz_args": ["-r -v 4 ", world_file],
+                "gz_args": ["-r -v 4 ", LaunchConfiguration("world")],
                 "on_exit_shutdown": "true",
             }.items(),
             condition=UnlessCondition(LaunchConfiguration("headless")),
@@ -75,10 +80,10 @@ def generate_launch_description():
             arguments=[
                 "-name", "libot",
                 "-topic", "robot_description",
-                "-x", str(robot_spawn["x"]),
-                "-y", str(robot_spawn["y"]),
-                "-z", str(robot_spawn["z"]),
-                "-Y", str(robot_spawn["yaw"]),
+                "-x", LaunchConfiguration("spawn_x"),
+                "-y", LaunchConfiguration("spawn_y"),
+                "-z", LaunchConfiguration("spawn_z"),
+                "-Y", LaunchConfiguration("spawn_yaw"),
             ],
             output="screen",
         ),

@@ -28,6 +28,28 @@ gz sim ros2_ws/src/libot_description/worlds/library.sdf
 
 To see the static 3D preview, run `npm run dev` from `FE`, open `/maps/1`, and choose **Gazebo 3D**. Drag to rotate and use the mouse wheel to zoom. The preview shows the floor plan; Gazebo adds the simulated robot when its runtime is running.
 
+## Simulate a saved Nav2 map
+
+The backend occupancy grid can be converted into a Gazebo SDF world. The generator uses the map YAML's image, resolution, origin, and occupancy thresholds; occupied cells become static collision boxes. Unknown regions enclosed by occupied cells are filled as solid obstacles, while open unknown space is left clear.
+
+```bash
+python3 tools/generate_gazebo_world_from_map.py \
+  --map maps/backend_bb72855a2eab4d98864df0b1d4fe7ec8.yaml
+```
+
+For this map, the robot spawn point below is in free space. From the `Libbot_Robot` directory, run the full simulation with the same map loaded by Nav2 and its generated Gazebo world:
+
+```bash
+docker compose -f docker/compose.yaml --profile simulation run --build --rm --service-ports ros2-simulation \
+  ros2 launch libot_bringup simulation_navigation.launch.py \
+  headless:=false use_rviz:=true autostart_navigation:=true \
+  world:=/ros2_ws/src/libot_description/worlds/backend_bb72855a2eab4d98864df0b1d4fe7ec8_gazebo.sdf \
+  map:=/ros2_ws/maps/backend_bb72855a2eab4d98864df0b1d4fe7ec8.yaml \
+  spawn_x:=0.807 spawn_y:=-0.074 spawn_z:=0.15 spawn_yaw:=0.0
+```
+
+`spawn_x`, `spawn_y`, and `spawn_yaw` are map/world coordinates in metres and radians. Choose a different free cell if the physical robot's initial pose is elsewhere. The generated world represents the 2D occupancy grid as 2 m tall obstacles; it does not recover real obstacle heights or shapes from the map.
+
 ## Run the complete simulation
 
 Generate the layout, start the .NET API on port 5205 and the Vite frontend on port 5173, then rebuild and start the simulation image. Rebuilding includes the new SDF world in the ROS install tree; the generated Nav2 map is mounted from `maps/`.
