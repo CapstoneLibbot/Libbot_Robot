@@ -6,6 +6,38 @@
 robot app, LiDAR, STM32 và TF; SLAM/Nav2 được mở riêng từ trang FE `/robot-mapping`.
 Trang FE gửi lệnh lái, xem map `/map`, lưu PGM/YAML trên robot cùng snapshot database,
 và khởi chạy Nav2 từ map đã chọn. Không chạy thêm launch phần cứng trong container này.
+`robot_control.launch.py` cũng tự khởi chạy Foxglove Bridge tại cổng `8765` để
+theo dõi ROS từ máy tính khác trong cùng mạng.
+
+## Kết nối Foxglove
+
+Sau khi build và chạy phần cứng bằng Docker Compose, lấy địa chỉ IP của Raspberry
+Pi rồi mở Foxglove trên máy tính và tạo kết nối **Foxglove WebSocket**:
+
+```bash
+# Chạy trên Raspberry Pi
+hostname -I
+
+# Xác nhận bridge đang mở trong container
+docker exec libot_ros2_hardware bash -lc \
+  'source /opt/ros/jazzy/setup.bash && ros2 node list | grep foxglove'
+```
+
+Địa chỉ kết nối có dạng `ws://<IP_RASPBERRY_PI>:8765`. Với profile Gazebo,
+Docker Compose cũng chuyển tiếp cổng này; kết nối đến `ws://<IP_MAY_CHAY_DOCKER>:8765`
+(hoặc `ws://localhost:8765` nếu Foxglove chạy ngay trên máy đó).
+
+Bridge chỉ xuất các topic phục vụ quan sát và không bật quyền gửi topic, gọi
+service hoặc truy cập parameter từ Foxglove. Trong layout, thêm **3D** với fixed
+frame `map` và topic `/robot_description`, `/tf`, `/tf_static`, `/scan`; thêm
+**Map** với `/map`, **Path** với `/plan`, và **Plot** hoặc **Raw Messages** với
+`/cmd_vel_nav`, `/cmd_vel`, `/cmd_vel_safe`, `/odom`, `/collision_monitor_state`
+và `/stm32_bridge/status`. `/global_costmap/*` và `/local_costmap/*` cũng được
+cho phép để kiểm tra vì sao planner/controller chọn đường vòng hoặc dừng.
+
+Nếu kết nối không được, kiểm tra `docker logs libot_ros2_hardware` để xem bridge
+có khởi động hay không và đảm bảo firewall/router cho phép TCP `8765` giữa máy
+chạy Foxglove và robot.
 
 Không chạy riêng `description.launch.py`, `sllidar_a1_launch.py`,
 `static_transform_publisher` hoặc `slam_toolbox` cùng lúc với launch bên dưới.
