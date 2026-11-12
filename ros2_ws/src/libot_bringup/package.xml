@@ -25,7 +25,6 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>navigation2</exec_depend>
   <exec_depend>nav2_bringup</exec_depend>
-  <exec_depend>nav2_rotation_shim_controller</exec_depend>
   <exec_depend>nav2_mppi_controller</exec_depend>
   <exec_depend>libot_mppi_critics</exec_depend>
   <exec_depend>nav2_behaviors</exec_depend>
