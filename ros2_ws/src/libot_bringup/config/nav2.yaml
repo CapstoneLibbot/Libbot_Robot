@@ -202,7 +202,7 @@ controller_server:
       PathAngleCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 2.2
+        cost_weight: 7.0
         offset_from_furthest: 10
         threshold_to_consider: 0.5
         max_angle_to_furthest: 0.785
@@ -210,7 +210,7 @@ controller_server:
       TwirlingCritic:
         enabled: true
         twirling_cost_power: 1
-        twirling_cost_weight: 10.0
+        twirling_cost_weight: 2.0
 local_costmap:
   local_costmap:
     ros__parameters:
