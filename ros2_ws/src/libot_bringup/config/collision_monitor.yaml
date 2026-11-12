@@ -12,13 +12,11 @@ collision_monitor:
     stop_pub_timeout: 1.0
     enable_stamped_cmd_vel: false
 
-    # Robot footprint is 0.33 x 0.365 m. Add the 0.015 m protection margin
-    # around the four mecanum wheels.
     polygons:
     - FootprintApproach
     FootprintApproach:
       type: polygon
-      points: '[[0.18, 0.1975], [0.18, -0.1975], [-0.18, -0.1975], [-0.18, 0.1975]]'
+      points: '[[0.175, 0.175], [0.175, -0.175], [-0.175, -0.175], [-0.175, 0.175]]'
       action_type: approach
       time_before_collision: 1.0
       simulation_time_step: 0.05
