@@ -130,8 +130,9 @@ controller_server:
       ay_min: -1.5
       az_max: 4.0
       motion_model: Omni
-      # These critics constrain body translation and mecanum wheel speeds.
-      # PathAlignCritic below also scores robot yaw against NavFn path yaw.
+      # These critics constrain mecanum motion. NavFn path poses do not carry
+      # useful intermediate yaw values, so heading is derived from path points
+      # by PathAngleCritic instead of PathAlignCritic.
       critics:
       - OmniConstraintCritic
       - MecanumCritic
@@ -139,6 +140,7 @@ controller_server:
       - GoalCritic
       - GoalAngleCritic
       - PathAlignCritic
+      - PathAngleCritic
       - PathFollowCritic
       - TwirlingCritic
       OmniConstraintCritic:
@@ -180,9 +182,16 @@ controller_server:
         trajectory_point_step: 4
         threshold_to_consider: 0.5
         offset_from_furthest: 20
-        # Prefer pointing the chassis along the path; holonomic motion remains
-        # available when the path geometry or obstacles make strafing useful.
-        use_path_orientations: true
+        use_path_orientations: false
+      PathAngleCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 5.0
+        offset_from_furthest: 10
+        threshold_to_consider: 0.5
+        max_angle_to_furthest: 0.25
+        # Forward-preference mode: align the nose with the upcoming path segment.
+        mode: 0
       PathFollowCritic:
         enabled: true
         cost_power: 1
