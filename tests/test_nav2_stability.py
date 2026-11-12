@@ -726,6 +726,13 @@ class Nav2ConfigurationTests(unittest.TestCase):
         )
         self.assertIn("if(COMPAT_SOURCES)", compat_build)
 
+        run_instructions = (ROOT / "run.md").read_text(encoding="utf-8")
+        mapping_instructions = (ROOT / "MAPPING_WORKFLOW.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("src/libot_mppi_critics", run_instructions)
+        self.assertIn("libot_mppi_critics", mapping_instructions)
+
 
 if __name__ == "__main__":
     unittest.main()
