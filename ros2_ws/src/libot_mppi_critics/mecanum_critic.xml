@@ -1,0 +1,7 @@
+<class_libraries>
+  <library path="ot_mppi_critics">
+    <class type="mppi::critics::MecanumCritic" base_class_type="mppi::critics::CriticFunction">
+      <description>Mecanum wheel speed critic</description>
+    </class>
+  </library>
+</class_libraries>

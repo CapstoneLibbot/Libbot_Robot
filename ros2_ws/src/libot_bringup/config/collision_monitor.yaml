@@ -12,13 +12,13 @@ collision_monitor:
     stop_pub_timeout: 1.0
     enable_stamped_cmd_vel: false
 
-    # Physical robot is 0.30 x 0.30 m. The 0.015 m margin on each side gives
-    # an effective protected footprint of 0.33 x 0.33 m.
+    # Robot footprint is 0.33 x 0.365 m. Add the 0.015 m protection margin
+    # around the four mecanum wheels.
     polygons:
     - FootprintApproach
     FootprintApproach:
       type: polygon
-      points: '[[0.165, 0.165], [0.165, -0.165], [-0.165, -0.165], [-0.165, 0.165]]'
+      points: '[[0.18, 0.1975], [0.18, -0.1975], [-0.18, -0.1975], [-0.18, 0.1975]]'
       action_type: approach
       time_before_collision: 1.0
       simulation_time_step: 0.05

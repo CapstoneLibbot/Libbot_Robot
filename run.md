@@ -60,6 +60,10 @@ ros2 run nav2_map_server map_saver_cli \
 
 ## Chạy Nav2 và gửi goal trực tiếp từ RViz
 
+Nav2 dùng MPPI holonomic cho bộ bánh mecanum: robot có thể dịch ngang khi bám
+đường, trong khi goal vẫn giữ kiểm soát yaw. Vận tốc ban đầu được giới hạn ở
+0,25 m/s theo trục X/Y và 0,8 rad/s theo yaw. Collision Monitor lọc lệnh trước
+khi STM32 nhận `/cmd_vel_safe`.
 
 Không chạy `mapping.launch.py` cùng lúc với navigation vì hai launch file sẽ tạo
 trùng LiDAR, STM32 bridge và robot state publisher.

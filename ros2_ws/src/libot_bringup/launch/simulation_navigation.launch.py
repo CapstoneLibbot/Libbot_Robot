@@ -17,6 +17,9 @@ def generate_launch_description():
         robot_spawn = json.load(stream)["robotSpawn"]
     simulation = os.path.join(bringup_share, "launch", "simulation.launch.py")
     navigation = os.path.join(bringup_share, "launch", "navigation.launch.py")
+    collision_monitor = os.path.join(
+        bringup_share, "launch", "collision_monitor.launch.py"
+    )
     return LaunchDescription([
         DeclareLaunchArgument("map", default_value="/ros2_ws/maps/library_sim.yaml"),
         DeclareLaunchArgument("backend_url", default_value="http://127.0.0.1:5205"),
@@ -26,6 +29,10 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(simulation),
             launch_arguments={"headless": LaunchConfiguration("headless")}.items(),
+        ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(collision_monitor),
+            launch_arguments={"use_sim_time": "true"}.items(),
         ),
         Node(
             package="tf2_ros",

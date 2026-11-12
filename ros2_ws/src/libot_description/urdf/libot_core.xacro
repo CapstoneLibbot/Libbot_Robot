@@ -19,23 +19,24 @@
     </link>
     <joint name="base_footprint_to_base_link" type="fixed"><parent link="base_footprint"/><child link="base_link"/><origin xyz="0 0 0.05"/></joint>
 
-    <xacro:macro name="wheel" params="side sign">
-      <link name="${side}_wheel_link">
-        <visual><geometry><cylinder radius="0.075" length="0.035"/></geometry><material name="libot_dark"/></visual>
-        <collision><geometry><cylinder radius="0.075" length="0.035"/></geometry></collision>
+    <xacro:macro name="mecanum_wheel" params="corner x y">
+      <link name="${corner}_wheel_link">
+        <visual><geometry><cylinder radius="0.03" length="0.035"/></geometry><material name="libot_dark"/></visual>
+        <collision><geometry><cylinder radius="0.03" length="0.035"/></geometry></collision>
         <inertial><mass value="0.5"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.0014"/></inertial>
       </link>
-      <joint name="${side}_wheel_joint" type="continuous"><parent link="base_link"/><child link="${side}_wheel_link"/><origin xyz="0 ${sign * 0.215} 0.075" rpy="1.5708 0 0"/><axis xyz="0 0 1"/></joint>
+      <joint name="${corner}_wheel_joint" type="continuous">
+        <parent link="base_link"/><child link="${corner}_wheel_link"/>
+        <!-- base_link is 0.05 m above base_footprint; wheel centers sit 0.03 m above it. -->
+        <origin xyz="${x} ${y} -0.02" rpy="1.5708 0 0"/>
+        <axis xyz="0 0 1"/>
+      </joint>
     </xacro:macro>
-    <xacro:wheel side="left" sign="1"/>
-    <xacro:wheel side="right" sign="-1"/>
-
-    <link name="caster_link">
-      <visual><geometry><sphere radius="0.035"/></geometry><material name="libot_dark"/></visual>
-      <collision><geometry><sphere radius="0.035"/></geometry></collision>
-      <inertial><mass value="0.1"/><inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/></inertial>
-    </link>
-    <joint name="caster_joint" type="fixed"><parent link="base_link"/><child link="caster_link"/><origin xyz="-0.18 0 0.035"/></joint>
+    <!-- Geometry matches ROBOT_L=0.135 m and ROBOT_W=0.165 m in Libbot_STM32. -->
+    <xacro:mecanum_wheel corner="front_left" x="0.135" y="0.165"/>
+    <xacro:mecanum_wheel corner="front_right" x="0.135" y="-0.165"/>
+    <xacro:mecanum_wheel corner="rear_left" x="-0.135" y="0.165"/>
+    <xacro:mecanum_wheel corner="rear_right" x="-0.135" y="-0.165"/>
 
     <!--
       LiDAR mounting measurements:

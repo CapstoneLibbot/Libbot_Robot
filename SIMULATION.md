@@ -44,6 +44,15 @@ The simulation publishes its command gateway on host port `9001` and reaches the
 
 Gazebo simulation uses ground-truth odometry for `map -> odom`; AMCL remains available for pose estimation but does not publish that transform in SIM. The hardware profile continues to use AMCL as the only `map -> odom` publisher.
 
+The simulated robot uses Gazebo Sim's mecanum drive system with four driven
+wheels. Nav2 velocity commands pass through Collision Monitor before the Gazebo
+bridge, using `/cmd_vel_safe` as the simulator input. MPPI can command forward,
+lateral, and rotational velocity; the simulation wheel contacts approximate
+the diagonal roller friction of the physical mecanum wheels.
+Some Jazzy binary releases do not export `OmniConstraintCritic` and
+`MecanumCritic`; `libot_mppi_critics` provides them only when they are missing
+from the installed MPPI package.
+
 Useful checks inside the simulation container:
 
 ```bash
