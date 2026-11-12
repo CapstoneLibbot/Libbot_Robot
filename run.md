@@ -61,9 +61,12 @@ ros2 run nav2_map_server map_saver_cli \
 ## Chạy Nav2 và gửi goal trực tiếp từ RViz
 
 Nav2 dùng MPPI holonomic cho bộ bánh mecanum: robot có thể dịch ngang khi bám
-đường, trong khi goal vẫn giữ kiểm soát yaw. Giới hạn Nav2 hiện tại là 0,30 m/s
-theo từng trục X/Y và 1,0 rad/s theo yaw, tương ứng trần tốc độ bánh đã khai báo
-trong STM32. Collision Monitor lọc lệnh trước khi STM32 nhận `/cmd_vel_safe`.
+đường, trong khi goal vẫn giữ kiểm soát yaw. Giới hạn Nav2 hiện tại là 0,40 m/s
+theo từng trục X/Y và 1,0 rad/s theo yaw; giới hạn bánh STM32 là 0,40 m/s.
+Collision Monitor lọc lệnh trước khi STM32 nhận `/cmd_vel_safe`.
+Đây là tốc độ tối đa cho đoạn đường còn xa goal; MPPI vẫn giảm tốc khi tiến vào
+goal để robot dừng đúng vị trí. Thay đổi trong `Libbot_STM32/Core/Inc/motor.h`
+cần được build và flash riêng lên STM32 — lệnh `colcon build` chỉ cập nhật ROS.
 
 Không chạy `mapping.launch.py` cùng lúc với navigation vì hai launch file sẽ tạo
 trùng LiDAR, STM32 bridge và robot state publisher.
@@ -114,6 +117,7 @@ ros2 lifecycle get /controller_server
 ros2 lifecycle get /velocity_smoother
 ros2 lifecycle get /collision_monitor
 ros2 pkg prefix libot_mppi_critics
+ros2 param get /controller_server FollowPath.vx_max
 ```
 
 Trong khi đang có goal, mở các terminal riêng để xem lệnh ở từng chặng:
@@ -122,6 +126,7 @@ Trong khi đang có goal, mở các terminal riêng để xem lệnh ở từng 
 ros2 topic echo /cmd_vel_nav
 ros2 topic echo /cmd_vel
 ros2 topic echo /cmd_vel_safe
+ros2 topic echo /speed_limit
 ros2 topic echo /stm32_bridge/status
 ```
 

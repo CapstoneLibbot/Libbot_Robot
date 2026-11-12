@@ -1,4 +1,4 @@
-# LiBot ROS 2 Jazzy Nav2 parameters — low-speed mecanum MPPI profile
+# LiBot ROS 2 Jazzy Nav2 parameters — mecanum MPPI profile
 # Frame tree: map -> odom -> base_footprint -> base_link -> laser
 # Mecanum wheel centers are +/-0.135 m in X and +/-0.165 m in Y.
 # With a 0.30 m chassis and 0.035 m wheel width, the footprint is 0.33 x 0.365 m.
@@ -116,17 +116,18 @@ controller_server:
       gamma: 0.015
       open_loop: false
       visualize: false
-      vx_std: 0.10
-      vy_std: 0.10
+      # Explore enough of the velocity range to reach the 0.35 m/s cruise target.
+      vx_std: 0.20
+      vy_std: 0.20
       wz_std: 0.20
-      vx_max: 0.30
-      vx_min: -0.30
-      vy_max: 0.30
+      vx_max: 0.40
+      vx_min: -0.40
+      vy_max: 0.40
       wz_max: 1.0
-      ax_max: 1.0
-      ax_min: -1.0
-      ay_max: 1.0
-      ay_min: -1.0
+      ax_max: 1.5
+      ax_min: -1.5
+      ay_max: 1.5
+      ay_min: -1.5
       az_max: 4.0
       motion_model: Omni
       # This pair constrains combined body translation and the mecanum wheel
@@ -149,9 +150,10 @@ controller_server:
         enabled: true
         cost_power: 1
         cost_weight: 4.0
-        vx_max: 0.30
-        vy_max: 0.30
-        wz_max: 1.0
+        # 0.40 m/s wheel cap allows 0.35 m/s translation plus steering margin.
+        vx_max: 0.40
+        vy_max: 0.40
+        wz_max: 1.33
       CostCritic:
         enabled: true
         cost_power: 1
@@ -383,20 +385,20 @@ velocity_smoother:
     scale_velocities: false
     feedback: OPEN_LOOP
     max_velocity:
-    - 0.30
-    - 0.30
+    - 0.40
+    - 0.40
     - 1.0
     min_velocity:
-    - -0.30
-    - -0.30
+    - -0.40
+    - -0.40
     - -1.0
     max_accel:
-    - 1.0
-    - 1.0
+    - 1.5
+    - 1.5
     - 4.0
     max_decel:
-    - -1.0
-    - -1.0
+    - -1.5
+    - -1.5
     - -4.0
     odom_topic: odom
     odom_duration: 0.1

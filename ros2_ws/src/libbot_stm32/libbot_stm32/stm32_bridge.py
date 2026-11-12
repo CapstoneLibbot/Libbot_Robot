@@ -33,7 +33,7 @@ class STM32Bridge(Node):
 
     ENCODER_TIMEOUT_SEC = 0.30
     ENCODER_PACKET_PERIOD_SEC = 0.02
-    ODOM_MAX_WHEEL_SPEED_MPS = 0.30
+    ODOM_MAX_WHEEL_SPEED_MPS = 0.40
     ENCODER_JUMP_MARGIN = 1.5
     CMD_TIMEOUT_SEC = 0.50  # Safety stop command; STM32 needs its own watchdog
     STM32_MAX_VX_MPS = 1.0

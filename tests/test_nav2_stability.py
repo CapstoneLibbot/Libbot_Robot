@@ -496,20 +496,20 @@ class Nav2ConfigurationTests(unittest.TestCase):
         self.assertEqual(follow["time_steps"], 56)
         self.assertEqual(follow["batch_size"], 1000)
         self.assertFalse(follow["visualize"])
-        self.assertEqual(follow["vx_max"], 0.25)
-        self.assertEqual(follow["vx_min"], -0.25)
-        self.assertEqual(follow["vy_max"], 0.25)
-        self.assertEqual(follow["wz_max"], 0.8)
+        self.assertEqual(follow["vx_max"], 0.40)
+        self.assertEqual(follow["vx_min"], -0.40)
+        self.assertEqual(follow["vy_max"], 0.40)
+        self.assertEqual(follow["wz_max"], 1.0)
         self.assertIn("OmniConstraintCritic", follow["critics"])
         self.assertIn("MecanumCritic", follow["critics"])
         self.assertNotIn("PathAngleCritic", follow["critics"])
-        self.assertEqual(follow["MecanumCritic"]["vx_max"], 0.30)
-        self.assertEqual(follow["MecanumCritic"]["vy_max"], 0.30)
-        self.assertEqual(follow["MecanumCritic"]["wz_max"], 1.0)
+        self.assertEqual(follow["MecanumCritic"]["vx_max"], 0.40)
+        self.assertEqual(follow["MecanumCritic"]["vy_max"], 0.40)
+        self.assertEqual(follow["MecanumCritic"]["wz_max"], 1.33)
 
         smoother = config["velocity_smoother"]["ros__parameters"]
-        self.assertEqual(smoother["max_velocity"], [0.25, 0.25, 0.8])
-        self.assertEqual(smoother["min_velocity"], [-0.25, -0.25, -0.8])
+        self.assertEqual(smoother["max_velocity"], [0.40, 0.40, 1.0])
+        self.assertEqual(smoother["min_velocity"], [-0.40, -0.40, -1.0])
 
         expected = (
             "publish_zero_velocity: true",
