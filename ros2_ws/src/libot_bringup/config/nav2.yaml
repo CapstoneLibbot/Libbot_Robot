@@ -130,8 +130,8 @@ controller_server:
       ay_min: -1.5
       az_max: 4.0
       motion_model: Omni
-      # This pair constrains combined body translation and the mecanum wheel
-      # speed envelope while allowing the robot to strafe along a NavFn path.
+      # These critics constrain body translation and mecanum wheel speeds.
+      # PathAlignCritic below also scores robot yaw against NavFn path yaw.
       critics:
       - OmniConstraintCritic
       - MecanumCritic
@@ -180,7 +180,9 @@ controller_server:
         trajectory_point_step: 4
         threshold_to_consider: 0.5
         offset_from_furthest: 20
-        use_path_orientations: false
+        # Prefer pointing the chassis along the path; holonomic motion remains
+        # available when the path geometry or obstacles make strafing useful.
+        use_path_orientations: true
       PathFollowCritic:
         enabled: true
         cost_power: 1

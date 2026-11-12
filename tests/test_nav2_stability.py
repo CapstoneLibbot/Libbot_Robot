@@ -504,6 +504,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
         self.assertIn("MecanumCritic", follow["critics"])
         self.assertNotIn("PathAngleCritic", follow["critics"])
         self.assertNotIn("PreferForwardCritic", follow["critics"])
+        self.assertTrue(follow["PathAlignCritic"]["use_path_orientations"])
         self.assertEqual(follow["MecanumCritic"]["vx_max"], 0.40)
         self.assertEqual(follow["MecanumCritic"]["vy_max"], 0.40)
         self.assertEqual(follow["MecanumCritic"]["wz_max"], 1.33)
