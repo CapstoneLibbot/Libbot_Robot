@@ -12,6 +12,7 @@ RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
     ros-jazzy-nav2-bringup \
     ros-jazzy-nav2-simple-commander \
     ros-jazzy-foxglove-bridge \
+    ros-jazzy-launch-xml \
     ros-jazzy-slam-toolbox \
     ros-jazzy-robot-localization \
     ros-jazzy-ros-gz \
