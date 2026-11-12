@@ -107,17 +107,7 @@ controller_server:
       xy_goal_tolerance: 0.10
       yaw_goal_tolerance: 0.20
     FollowPath:
-      plugin: nav2_rotation_shim_controller::RotationShimController
-      primary_controller: nav2_mppi_controller::MPPIController
-      angular_dist_threshold: 0.35
-      angular_disengage_threshold: 0.15
-      forward_sampling_distance: 0.5
-      rotate_to_heading_angular_vel: 0.5
-      max_angular_accel: 2.0
-      max_cost_threshold: 254.0
-      simulate_ahead_time: 1.0
-      rotate_to_goal_heading: false
-      use_path_orientations: false
+      plugin: nav2_mppi_controller::MPPIController
       time_steps: 56
       model_dt: 0.05
       batch_size: 1000
