@@ -1,12 +1,8 @@
-# LiBot ROS 2 Jazzy Nav2 parameters — mecanum MPPI profile (tuned)
+# LiBot ROS 2 Jazzy Nav2 parameters — mecanum MPPI profile
 # Frame tree: map -> odom -> base_footprint -> base_link -> laser
 # Mecanum wheel centers are +/-0.135 m in X and +/-0.165 m in Y.
 # With a 0.30 m chassis and 0.035 m wheel width, the footprint is 0.33 x 0.365 m.
 # Nav2 adds 0.015 m footprint padding on every side.
-# NOTE: if the real outer size (including wheels) is only 0.30 x 0.30 m, use
-#   footprint: '[[0.15, 0.15], [0.15, -0.15], [-0.15, -0.15], [-0.15, 0.15]]'
-#   footprint_padding: 0.01
-# in BOTH costmaps. Measure the robot before changing it.
 # navigation.launch.py starts only the Nav2 nodes configured in this file.
 # Collision Monitor is launched by robot.launch.py and forwards /cmd_vel to
 # /cmd_vel_safe. The STM32 bridge subscribes only to the safe output.
@@ -84,6 +80,8 @@ controller_server:
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
+    # Treat a blocked controller as persistent only after five seconds. This
+    # matches the progress checker so transient obstacles can move away first.
     failure_tolerance: 5.0
     publish_zero_velocity: true
     progress_checker_plugins:
@@ -94,11 +92,15 @@ controller_server:
     - FollowPath
     use_realtime_priority: false
     progress_checker:
-      # Count both translation and rotation as progress.
+      # Count both translation and rotation as progress. The simple checker
+      # only measures XY distance and can abort while the robot is correctly
+      # rotating to the requested final yaw at the goal.
       plugin: nav2_controller::PoseProgressChecker
       required_movement_radius: 0.05
       required_movement_angle: 0.10
-      movement_time_allowance: 10.0
+      # Trigger controller recovery promptly when a new obstacle leaves the
+      # robot stationary. Rotation still counts as progress with this checker.
+      movement_time_allowance: 5.0
     general_goal_checker:
       stateful: true
       plugin: nav2_controller::SimpleGoalChecker
@@ -114,19 +116,23 @@ controller_server:
       gamma: 0.015
       open_loop: false
       visualize: false
-      vx_std: 0.15
-      vy_std: 0.15
-      wz_std: 0.30
-      vx_max: 0.30
-      vx_min: -0.30
-      vy_max: 0.30
+      # Explore enough of the velocity range to reach the 0.35 m/s cruise target.
+      vx_std: 0.20
+      vy_std: 0.20
+      wz_std: 0.20
+      vx_max: 0.40
+      vx_min: -0.40
+      vy_max: 0.40
       wz_max: 1.0
-      ax_max: 0.8
-      ax_min: -0.8
-      ay_max: 0.8
-      ay_min: -0.8
-      az_max: 2.0
+      ax_max: 1.5
+      ax_min: -1.5
+      ay_max: 1.5
+      ay_min: -1.5
+      az_max: 4.0
       motion_model: Omni
+      # These critics constrain mecanum motion. NavFn path poses do not carry
+      # useful intermediate yaw values, so heading is derived from path points
+      # by PathAngleCritic instead of PathAlignCritic.
       critics:
       - OmniConstraintCritic
       - MecanumCritic
@@ -145,6 +151,7 @@ controller_server:
         enabled: true
         cost_power: 1
         cost_weight: 4.0
+        # 0.40 m/s wheel cap allows 0.35 m/s translation plus steering margin.
         vx_max: 0.40
         vy_max: 0.40
         wz_max: 1.33
@@ -165,8 +172,8 @@ controller_server:
       GoalAngleCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 5.0
-        threshold_to_consider: 1.5
+        cost_weight: 3.0
+        threshold_to_consider: 0.8
       PathAlignCritic:
         enabled: true
         cost_power: 1
@@ -185,15 +192,15 @@ controller_server:
       PathAngleCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 6.0
+        cost_weight: 2.2
         offset_from_furthest: 10
         threshold_to_consider: 0.5
-        max_angle_to_furthest: 0.5
+        max_angle_to_furthest: 0.785
         mode: 0
       TwirlingCritic:
         enabled: true
         twirling_cost_power: 1
-        twirling_cost_weight: 2.0
+        twirling_cost_weight: 10.0
 local_costmap:
   local_costmap:
     ros__parameters:
@@ -221,8 +228,8 @@ local_costmap:
         override_lethal_cost: true
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        cost_scaling_factor: 5.0
-        inflation_radius: 0.30
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.35
       always_send_full_costmap: true
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -311,8 +318,8 @@ global_costmap:
         map_subscribe_transient_local: true
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        cost_scaling_factor: 5.0
-        inflation_radius: 0.30
+        cost_scaling_factor: 3.0
+        inflation_radius: 0.35
       always_send_full_costmap: true
 map_saver:
   ros__parameters:
@@ -328,7 +335,7 @@ planner_server:
     costmap_update_timeout: 1.0
     GridBased:
       plugin: nav2_navfn_planner::NavfnPlanner
-      tolerance: 0.1
+      tolerance: 0.5
       use_astar: true
       allow_unknown: false
 smoother_server:
@@ -382,21 +389,21 @@ velocity_smoother:
     scale_velocities: true
     feedback: OPEN_LOOP
     max_velocity:
-    - 0.30
-    - 0.30
+    - 0.40
+    - 0.40
     - 1.0
     min_velocity:
-    - -0.30
-    - -0.30
+    - -0.40
+    - -0.40
     - -1.0
     max_accel:
-    - 0.8
-    - 0.8
-    - 2.0
+    - 1.5
+    - 1.5
+    - 4.0
     max_decel:
-    - -0.8
-    - -0.8
-    - -2.0
+    - -1.5
+    - -1.5
+    - -4.0
     odom_topic: odom
     odom_duration: 0.1
     deadband_velocity:
