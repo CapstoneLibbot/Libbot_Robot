@@ -50,6 +50,12 @@ docker compose -f docker/compose.yaml --profile simulation run --build --rm --se
 
 `spawn_x`, `spawn_y`, and `spawn_yaw` are map/world coordinates in metres and radians. Choose a different free cell if the physical robot's initial pose is elsewhere. The generated world represents the 2D occupancy grid as 2 m tall obstacles; it does not recover real obstacle heights or shapes from the map.
 
+### Compare Gazebo truth with Nav2's estimate in RViz
+
+The simulation bridges the Gazebo model-specific pose topic to `/gazebo/ground_truth_pose`. In RViz, choose **Add → Pose**, set **Topic** to `/gazebo/ground_truth_pose`, and keep **Fixed Frame** set to `map`. The Pose arrow shows Gazebo's physical pose. The RobotModel uses Nav2's AMCL localization, initialized from the configured spawn pose and corrected from LiDAR scans. These should align when the map, world, and spawn pose match.
+
+If the Pose arrow is not visible, check that `/gazebo/ground_truth_pose` is publishing with `ros2 topic hz /gazebo/ground_truth_pose`. The world/map pair must use the same coordinates, as they do for the generated backend map world.
+
 ## Run the complete simulation
 
 Generate the layout, start the .NET API on port 5205 and the Vite frontend on port 5173, then rebuild and start the simulation image. Rebuilding includes the new SDF world in the ROS install tree; the generated Nav2 map is mounted from `maps/`.
@@ -64,7 +70,7 @@ On the FE, open `/maps/1` for the 3D layout preview. To watch a workflow, open `
 
 The simulation publishes its command gateway on host port `9001` and reaches the API through `host.docker.internal`, which works on Docker Desktop and Linux with the Compose `host-gateway` mapping.
 
-Gazebo simulation uses ground-truth odometry for `map -> odom`; AMCL remains available for pose estimation but does not publish that transform in SIM. The hardware profile continues to use AMCL as the only `map -> odom` publisher.
+Gazebo simulation and the hardware profile both use AMCL to publish `map -> odom`. In simulation, AMCL starts from the configured spawn pose and corrects it using LiDAR scans. `/gazebo/ground_truth_pose` is a read-only comparison display; Nav2 does not consume it.
 
 The simulated robot uses Gazebo Sim's mecanum drive system with four driven
 wheels. Nav2 velocity commands pass through Collision Monitor before the Gazebo
@@ -87,6 +93,20 @@ ros2 run tf2_ros tf2_echo map base_footprint
 ros2 action list | grep navigate_to_pose
 ros2 lifecycle get /bt_navigator
 ```
+
+### Diagnose a goal that aborts
+
+If RViz shows a global path but the goal aborts, check the velocity pipeline while a new goal is active. Run each command in a second container shell; `--once` should return promptly while the robot is trying to move:
+
+```bash
+ros2 topic echo /cmd_vel_nav --once
+ros2 topic echo /cmd_vel --once
+ros2 topic echo /cmd_vel_safe --once
+ros2 topic echo /collision_monitor_state --once
+ros2 topic echo /odom --once
+```
+
+`/cmd_vel_nav` is the controller output, `/cmd_vel` is the velocity smoother output, and `/cmd_vel_safe` is the Collision Monitor output sent to Gazebo. A nonzero command that becomes zero identifies the stage suppressing motion; nonzero `/cmd_vel_safe` with a stationary Gazebo model points to the Gazebo bridge or mecanum drive. If `/cmd_vel_nav` itself is zero, inspect `controller_server` logs and the local costmap. Also check the Collision Monitor's `FootprintApproach` state: it currently uses `min_points: 1`, so a single LiDAR return in the footprint can trigger its approach limit in this tight map.
 
 ## Run the physical robot
 

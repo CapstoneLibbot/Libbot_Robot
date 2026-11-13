@@ -50,6 +50,8 @@ services:
       LIBOT_TCP_PORT: "9001"
       LIBOT_SIM_WORLD: library
       LIBOT_BACKEND_URL: "${LIBOT_BACKEND_URL:-http://host.docker.internal:5205}"
+      DISPLAY: "${DISPLAY:-:0}"
+      QT_X11_NO_MITSHM: "1"
     command: >-
       bash -lc "source /opt/ros/jazzy/setup.bash && source /ros2_ws/install/setup.bash &&
       ros2 launch libot_bringup simulation_navigation.launch.py

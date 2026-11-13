@@ -37,6 +37,11 @@ def generate_launch_description():
         DeclareLaunchArgument("headless", default_value="true"),
         DeclareLaunchArgument("autostart_navigation", default_value="false"),
         DeclareLaunchArgument("start_foxglove_bridge", default_value="true"),
+        DeclareLaunchArgument(
+            "show_gazebo_ground_truth",
+            default_value="true",
+            description="Publish Gazebo model pose for a separate RViz Pose display",
+        ),
         DeclareLaunchArgument("foxglove_port", default_value="8765"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(simulation),
@@ -62,17 +67,11 @@ def generate_launch_description():
             condition=IfCondition(LaunchConfiguration("start_foxglove_bridge")),
         ),
         Node(
-            package="tf2_ros",
-            executable="static_transform_publisher",
-            name="simulation_map_to_odom",
-            arguments=[
-                "--x", LaunchConfiguration("spawn_x"),
-                "--y", LaunchConfiguration("spawn_y"),
-                "--z", "0.0",
-                "--yaw", LaunchConfiguration("spawn_yaw"), "--pitch", "0.0", "--roll", "0.0",
-                "--frame-id", "map", "--child-frame-id", "odom",
-            ],
+            package="libot_bringup",
+            executable="ground_truth_pose.py",
+            name="gazebo_ground_truth_pose",
             parameters=[{"use_sim_time": True}],
+            condition=IfCondition(LaunchConfiguration("show_gazebo_ground_truth")),
             output="screen",
         ),
         TimerAction(period=4.0, actions=[IncludeLaunchDescription(
@@ -80,7 +79,11 @@ def generate_launch_description():
             launch_arguments={
                 "map": LaunchConfiguration("map"),
                 "use_sim_time": "true",
-                "amcl_tf_broadcast": "false",
+                "amcl_tf_broadcast": "true",
+                "set_initial_pose": "true",
+                "initial_pose_x": LaunchConfiguration("spawn_x"),
+                "initial_pose_y": LaunchConfiguration("spawn_y"),
+                "initial_pose_yaw": LaunchConfiguration("spawn_yaw"),
                 "use_hardware": "false",
                 "use_rviz": LaunchConfiguration("use_rviz"),
                 "start_workflow_app": "false",

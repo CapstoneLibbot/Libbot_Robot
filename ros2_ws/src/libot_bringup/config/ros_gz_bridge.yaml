@@ -28,6 +28,14 @@
   gz_type_name: gz.msgs.Pose_V
   direction: GZ_TO_ROS
 
+# Gazebo's model-specific topic preserves robot identity, unlike Pose_V, whose
+# ros_gz TFMessage conversion leaves frame IDs empty in this setup.
+- ros_topic_name: /gazebo/ground_truth_model_pose
+  gz_topic_name: /model/libot/pose
+  ros_type_name: geometry_msgs/msg/Pose
+  gz_type_name: gz.msgs.Pose
+  direction: GZ_TO_ROS
+
 - ros_topic_name: /joint_states
   gz_topic_name: /joint_states
   ros_type_name: sensor_msgs/msg/JointState

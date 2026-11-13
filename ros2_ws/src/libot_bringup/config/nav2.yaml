@@ -228,8 +228,8 @@ local_costmap:
         override_lethal_cost: true
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.15
+        cost_scaling_factor: 2.0
+        inflation_radius: 0.4
       always_send_full_costmap: true
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -318,8 +318,8 @@ global_costmap:
         map_subscribe_transient_local: true
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.15
+        cost_scaling_factor: 2.0
+        inflation_radius: 0.4
       always_send_full_costmap: true
 map_saver:
   ros__parameters:

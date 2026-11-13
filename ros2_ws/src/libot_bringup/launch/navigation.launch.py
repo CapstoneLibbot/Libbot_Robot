@@ -60,8 +60,16 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "amcl_tf_broadcast",
             default_value="true",
-            description="Let AMCL publish map to odom (disable when simulation uses ground truth TF)",
+            description="Let AMCL publish the map to odom transform",
         ),
+        DeclareLaunchArgument(
+            "set_initial_pose",
+            default_value="false",
+            description="Initialize AMCL from the initial_pose_* arguments",
+        ),
+        DeclareLaunchArgument("initial_pose_x", default_value="0.0"),
+        DeclareLaunchArgument("initial_pose_y", default_value="0.0"),
+        DeclareLaunchArgument("initial_pose_yaw", default_value="0.0"),
         DeclareLaunchArgument(
             "use_hardware",
             default_value="true",
@@ -122,6 +130,18 @@ def generate_launch_description():
                     "use_sim_time": LaunchConfiguration("use_sim_time"),
                     "tf_broadcast": ParameterValue(
                         LaunchConfiguration("amcl_tf_broadcast"), value_type=bool
+                    ),
+                    "set_initial_pose": ParameterValue(
+                        LaunchConfiguration("set_initial_pose"), value_type=bool
+                    ),
+                    "initial_pose.x": ParameterValue(
+                        LaunchConfiguration("initial_pose_x"), value_type=float
+                    ),
+                    "initial_pose.y": ParameterValue(
+                        LaunchConfiguration("initial_pose_y"), value_type=float
+                    ),
+                    "initial_pose.yaw": ParameterValue(
+                        LaunchConfiguration("initial_pose_yaw"), value_type=float
                     ),
                 },
             ],

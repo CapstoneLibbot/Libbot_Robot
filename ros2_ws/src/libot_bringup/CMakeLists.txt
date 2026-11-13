@@ -11,6 +11,7 @@ install(
 install(
   PROGRAMS
     scripts/manual_control.py
+    scripts/ground_truth_pose.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
