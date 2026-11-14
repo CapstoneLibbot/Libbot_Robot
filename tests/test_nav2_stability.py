@@ -658,6 +658,11 @@ class Nav2ConfigurationTests(unittest.TestCase):
         xacro_ns = {"xacro": "http://www.ros.org/wiki/xacro"}
         wheels = description.findall(".//xacro:mecanum_wheel", xacro_ns)
         self.assertEqual(len(wheels), 4)
+        wheel_joint_axis = description.find(
+            ".//xacro:macro[@name='mecanum_wheel']/link/joint/axis", xacro_ns
+        )
+        self.assertIsNotNone(wheel_joint_axis)
+        self.assertEqual(wheel_joint_axis.attrib["xyz"], "0 1 0")
         wheel_positions = {
             wheel.attrib["corner"]: (
                 float(wheel.attrib["x"]),
@@ -734,6 +739,39 @@ class Nav2ConfigurationTests(unittest.TestCase):
         )
         self.assertIn("src/libot_mppi_critics", run_instructions)
         self.assertIn("libot_mppi_critics", mapping_instructions)
+
+    def test_lidar_scan_plane_is_above_the_chassis(self):
+        description = ET.parse(
+            ROOT
+            / "ros2_ws"
+            / "src"
+            / "libot_description"
+            / "urdf"
+            / "libot_core.xacro"
+        ).getroot()
+        base_link = description.find(".//link[@name='base_link']")
+        self.assertIsNotNone(base_link)
+        chassis_box = base_link.find("./collision/geometry/box")
+        chassis_origin = base_link.find("./collision/origin")
+        self.assertIsNotNone(chassis_box)
+        self.assertIsNotNone(chassis_origin)
+        chassis_height = float(chassis_box.attrib["size"].split()[2])
+        chassis_center = float(chassis_origin.attrib["xyz"].split()[2])
+
+        base_joint = description.find(".//joint[@name='base_footprint_to_base_link']/origin")
+        laser_joint = description.find(".//joint[@name='base_link_to_laser']/origin")
+        self.assertIsNotNone(base_joint)
+        self.assertIsNotNone(laser_joint)
+        base_z = float(base_joint.attrib["xyz"].split()[2])
+        laser_xyz = [float(value) for value in laser_joint.attrib["xyz"].split()]
+        chassis_top = base_z + chassis_center + chassis_height / 2.0
+        scan_height = base_z + laser_xyz[2]
+
+        self.assertAlmostEqual(laser_xyz[0], -0.10)
+        self.assertAlmostEqual(laser_xyz[1], 0.0)
+        self.assertAlmostEqual(scan_height, 0.25)
+        self.assertAlmostEqual(chassis_top, 0.22)
+        self.assertLess(chassis_top, scan_height)
 
 
 if __name__ == "__main__":

@@ -13,23 +13,24 @@
 
     <link name="base_footprint"/>
     <link name="base_link">
-      <visual><origin xyz="0 0 0.16"/><geometry><box size="0.30 0.30 0.30"/></geometry><material name="libot_blue"/></visual>
-      <collision><origin xyz="0 0 0.16"/><geometry><box size="0.30 0.30 0.30"/></geometry></collision>
-      <inertial><origin xyz="0 0 0.16"/><mass value="18"/><xacro:box_inertia mass="18" x="0.30" y="0.30" z="0.30"/></inertial>
+      <visual><origin xyz="0 0 0.09"/><geometry><box size="0.30 0.30 0.16"/></geometry><material name="libot_blue"/></visual>
+      <collision><origin xyz="0 0 0.09"/><geometry><box size="0.30 0.30 0.16"/></geometry></collision>
+      <inertial><origin xyz="0 0 0.09"/><mass value="18"/><xacro:box_inertia mass="18" x="0.30" y="0.30" z="0.16"/></inertial>
     </link>
     <joint name="base_footprint_to_base_link" type="fixed"><parent link="base_footprint"/><child link="base_link"/><origin xyz="0 0 0.05"/></joint>
 
     <xacro:macro name="mecanum_wheel" params="corner x y">
       <link name="${corner}_wheel_link">
-        <visual><geometry><cylinder radius="0.03" length="0.035"/></geometry><material name="libot_dark"/></visual>
-        <collision><geometry><cylinder radius="0.03" length="0.035"/></geometry></collision>
+        <visual><origin rpy="1.5708 0 0"/><geometry><cylinder radius="0.03" length="0.035"/></geometry><material name="libot_dark"/></visual>
+        <collision><origin rpy="1.5708 0 0"/><geometry><cylinder radius="0.03" length="0.035"/></geometry></collision>
         <inertial><mass value="0.5"/><inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.0014"/></inertial>
       </link>
       <joint name="${corner}_wheel_joint" type="continuous">
         <parent link="base_link"/><child link="${corner}_wheel_link"/>
         <!-- base_link is 0.05 m above base_footprint; wheel centers sit 0.03 m above it. -->
-        <origin xyz="${x} ${y} -0.02" rpy="1.5708 0 0"/>
-        <axis xyz="0 0 1"/>
+        <origin xyz="${x} ${y} -0.02" rpy="0 0 0"/>
+        <!-- A +Y wheel axis makes positive MecanumDrive speed roll toward +X. -->
+        <axis xyz="0 1 0"/>
       </joint>
     </xacro:macro>
     <!-- Geometry matches ROBOT_L=0.135 m and ROBOT_W=0.165 m in Libbot_STM32. -->
@@ -38,20 +39,12 @@
     <xacro:mecanum_wheel corner="rear_left" x="-0.135" y="0.165"/>
     <xacro:mecanum_wheel corner="rear_right" x="-0.135" y="-0.165"/>
 
-    <!--
-      LiDAR mounting measurements:
-      - centre: 0.10 m behind the robot centre, with no lateral offset;
-      - top surface: 0.27 m above the ground;
-      - base_link is 0.05 m above the ground and the LiDAR model is 0.055 m
-        tall, therefore the LiDAR centre is 0.1925 m above base_link.
-      The LiDAR +X axis remains aligned with the robot front (+X of base_link).
-    -->
     <link name="laser">
       <visual><geometry><cylinder radius="0.045" length="0.055"/></geometry><material name="lidar_black"/></visual>
       <collision><geometry><cylinder radius="0.045" length="0.055"/></geometry></collision>
       <inertial><mass value="0.15"/><inertia ixx="0.00015" ixy="0" ixz="0" iyy="0.00015" iyz="0" izz="0.00015"/></inertial>
     </link>
-    <joint name="base_link_to_laser" type="fixed"><parent link="base_link"/><child link="laser"/><origin xyz="-0.10 0 0.1925" rpy="0 0 0"/></joint>
+    <joint name="base_link_to_laser" type="fixed"><parent link="base_link"/><child link="laser"/><origin xyz="-0.10 0 0.20" rpy="0 0 0"/></joint>
 
     <link name="imu_link"/>
     <joint name="base_link_to_imu" type="fixed">

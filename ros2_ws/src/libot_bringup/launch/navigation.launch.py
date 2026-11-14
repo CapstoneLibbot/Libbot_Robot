@@ -91,6 +91,19 @@ def generate_launch_description():
             description="Automatically activate the navigation lifecycle nodes",
         ),
         DeclareLaunchArgument(
+            "controller_motion_model",
+            default_value="Omni",
+            description="MPPI model; the Gazebo wheel-contact approximation can use DiffDrive",
+        ),
+        DeclareLaunchArgument("controller_vy_max", default_value="0.30"),
+        DeclareLaunchArgument("controller_vy_std", default_value="0.20"),
+        DeclareLaunchArgument("controller_ay_max", default_value="1.5"),
+        DeclareLaunchArgument("controller_ay_min", default_value="-1.5"),
+        DeclareLaunchArgument("controller_vx_max", default_value="0.30"),
+        DeclareLaunchArgument("controller_vx_std", default_value="0.20"),
+        DeclareLaunchArgument("controller_ax_max", default_value="1.5"),
+        DeclareLaunchArgument("controller_ax_min", default_value="-1.5"),
+        DeclareLaunchArgument(
             "robot_app_path",
             default_value="/ros2_ws/robot_app/main.py",
             description="Absolute path to robot_app/main.py",
@@ -233,7 +246,34 @@ def generate_launch_description():
             output="screen",
             parameters=[
                 LaunchConfiguration("params_file"),
-                {"use_sim_time": LaunchConfiguration("use_sim_time")},
+                {
+                    "use_sim_time": LaunchConfiguration("use_sim_time"),
+                    "FollowPath.motion_model": LaunchConfiguration("controller_motion_model"),
+                    "FollowPath.vx_max": ParameterValue(
+                        LaunchConfiguration("controller_vx_max"), value_type=float
+                    ),
+                    "FollowPath.vx_std": ParameterValue(
+                        LaunchConfiguration("controller_vx_std"), value_type=float
+                    ),
+                    "FollowPath.ax_max": ParameterValue(
+                        LaunchConfiguration("controller_ax_max"), value_type=float
+                    ),
+                    "FollowPath.ax_min": ParameterValue(
+                        LaunchConfiguration("controller_ax_min"), value_type=float
+                    ),
+                    "FollowPath.vy_max": ParameterValue(
+                        LaunchConfiguration("controller_vy_max"), value_type=float
+                    ),
+                    "FollowPath.vy_std": ParameterValue(
+                        LaunchConfiguration("controller_vy_std"), value_type=float
+                    ),
+                    "FollowPath.ay_max": ParameterValue(
+                        LaunchConfiguration("controller_ay_max"), value_type=float
+                    ),
+                    "FollowPath.ay_min": ParameterValue(
+                        LaunchConfiguration("controller_ay_min"), value_type=float
+                    ),
+                },
             ],
             remappings=[("cmd_vel", "cmd_vel_nav")],
         ),
