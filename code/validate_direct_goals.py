@@ -13,7 +13,7 @@ from geometry_msgs.msg import Pose, TransformStamped, Twist
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.msg import CollisionMonitorState
 from nav2_msgs.srv import ManageLifecycleNodes
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.time import Time
@@ -81,10 +81,15 @@ class GoalRunner(Node):
             "/cmd_vel_safe": None,
         }
         self.collision_state: CollisionMonitorState | None = None
+        self.motion_samples: list[tuple[float, float]] = []
+        self.heading_errors: list[float] = []
+        self.plan: Path | None = None
+        self.measuring = False
         self.scan_points_inside_footprint: list[tuple[float, float, float]] = []
 
         self.create_subscription(Pose, "/gazebo/ground_truth_model_pose", self._on_truth_pose, 10)
         self.create_subscription(Odometry, "/odom", self._on_odom, 10)
+        self.create_subscription(Path, "/plan", self._on_plan, 10)
         if self.ground_truth_localization:
             self.create_timer(0.01, self._broadcast_truth_transform)
         for topic in self.commands:
@@ -99,6 +104,30 @@ class GoalRunner(Node):
 
     def _on_truth_pose(self, msg: Pose) -> None:
         self.ground_truth_pose = msg
+        command = self.commands["/cmd_vel_safe"]
+        if not self.measuring or self.plan is None or command is None:
+            return
+        if math.hypot(command.linear.x, command.linear.y) < 0.03:
+            return
+        poses = self.plan.poses
+        if self.plan.header.frame_id != "map" or len(poses) < 2:
+            return
+        nearest = min(range(len(poses)), key=lambda i: (
+            (poses[i].pose.position.x - msg.position.x) ** 2
+            + (poses[i].pose.position.y - msg.position.y) ** 2
+        ))
+        start = poses[nearest].pose.position
+        if math.hypot(start.x - msg.position.x, start.y - msg.position.y) > 0.5:
+            return
+        for following in poses[nearest + 1:]:
+            end = following.pose.position
+            if math.hypot(end.x - start.x, end.y - start.y) >= 0.10:
+                tangent = math.atan2(end.y - start.y, end.x - start.x)
+                self.heading_errors.append(abs(angle_error(quaternion_yaw(msg.orientation), tangent)))
+                break
+
+    def _on_plan(self, msg: Path) -> None:
+        self.plan = msg
 
     def _on_odom(self, msg: Odometry) -> None:
         self.odom_pose = msg.pose.pose
@@ -138,6 +167,8 @@ class GoalRunner(Node):
     def _command_callback(self, topic: str):
         def callback(msg: Twist) -> None:
             self.commands[topic] = msg
+            if topic == "/cmd_vel_safe":
+                self.motion_samples.append((abs(msg.linear.x), abs(msg.linear.y)))
 
         return callback
 
@@ -301,6 +332,25 @@ class GoalRunner(Node):
         print(
             f"Goal {index}/{len(GOALS)}: x={x:.3f}, y={y:.3f}, yaw={yaw:.3f}", flush=True
         )
+        started_at = time.monotonic()
+        self.motion_samples.clear()
+        self.heading_errors.clear()
+        self.plan = None
+        self.measuring = True
+
+        def print_motion_metrics() -> None:
+            self.measuring = False
+            forward = sum(sample[0] for sample in self.motion_samples)
+            lateral = sum(sample[1] for sample in self.motion_samples)
+            print(f"  Wall time: {time.monotonic() - started_at:.1f} s", flush=True)
+            if forward + lateral > 0:
+                share = lateral / (forward + lateral)
+                print(f"  Lateral share of sampled commanded translation: {share:.1%}", flush=True)
+            if self.heading_errors:
+                errors = sorted(self.heading_errors)
+                median = errors[len(errors) // 2]
+                p90 = errors[min(len(errors) - 1, int(0.9 * len(errors)))]
+                print(f"  Heading error to path tangent: median={math.degrees(median):.1f} deg, p90={math.degrees(p90):.1f} deg ({len(errors)} samples)", flush=True)
 
         last_feedback_at = 0.0
         best_distance_remaining = math.inf
@@ -331,6 +381,7 @@ class GoalRunner(Node):
         if goal_handle is None or not goal_handle.accepted:
             print(f"Goal {index} rejected by Nav2.", flush=True)
             self.print_diagnostics(x, y)
+            print_motion_metrics()
             return False
 
         result_future = goal_handle.get_result_async()
@@ -359,6 +410,7 @@ class GoalRunner(Node):
                 cancel_future = goal_handle.cancel_goal_async()
                 rclpy.spin_until_future_complete(self, cancel_future, timeout_sec=5.0)
                 self.print_diagnostics(verify_x, verify_y)
+                print_motion_metrics()
                 return False
 
         if not result_future.done():
@@ -366,6 +418,7 @@ class GoalRunner(Node):
             cancel_future = goal_handle.cancel_goal_async()
             rclpy.spin_until_future_complete(self, cancel_future, timeout_sec=5.0)
             self.print_diagnostics(x, y)
+            print_motion_metrics()
             return False
 
         wrapped_result = result_future.result()
@@ -375,6 +428,7 @@ class GoalRunner(Node):
                 flush=True,
             )
             self.print_diagnostics()
+            print_motion_metrics()
             return False
 
         truth_deadline = time.monotonic() + 3.0
@@ -393,6 +447,7 @@ class GoalRunner(Node):
                     f"XY={xy_error:.3f} m, yaw={yaw_error:.3f} rad",
                     flush=True,
                 )
+                print_motion_metrics()
                 return True
 
         print(
@@ -407,6 +462,7 @@ class GoalRunner(Node):
             )
             print(f"  Gazebo error: XY={xy_error:.3f} m, yaw={yaw_error:.3f} rad", flush=True)
         self.print_diagnostics(verify_x, verify_y)
+        print_motion_metrics()
         return False
 
 
@@ -415,6 +471,10 @@ def main() -> int:
     parser.add_argument(
         "--start-index", type=int, choices=range(1, len(GOALS) + 1), default=1,
         help="resume at this one-based clicked-point index after a Gazebo runner interruption",
+    )
+    parser.add_argument(
+        "--end-index", type=int, choices=range(1, len(GOALS) + 1), default=len(GOALS),
+        help="stop after this one-based clicked-point index",
     )
     parser.add_argument(
         "--ground-truth-localization",
@@ -427,6 +487,8 @@ def main() -> int:
         help="reuse an already active Nav2 lifecycle stack after a runner-only restart",
     )
     args = parser.parse_args()
+    if args.start_index > args.end_index:
+        parser.error("--start-index must not exceed --end-index")
 
     rclpy.init()
     runner = GoalRunner(ground_truth_localization=args.ground_truth_localization)
@@ -453,6 +515,8 @@ def main() -> int:
         for index, ((x, y), yaw) in enumerate(zip(GOALS, yaws), start=1):
             if index < args.start_index:
                 continue
+            if index > args.end_index:
+                break
             if not runner.navigate_one(
                 index,
                 x,
@@ -464,11 +528,11 @@ def main() -> int:
                 print(f"Sequence stopped at goal {index}; not successful.", flush=True)
                 return 1
 
-        if args.start_index == 1:
+        if args.start_index == 1 and args.end_index == len(GOALS):
             print(f"ALL {len(GOALS)} GOALS SUCCEEDED in Nav2 and Gazebo pose checks.", flush=True)
         else:
             print(
-                f"GOALS {args.start_index}-{len(GOALS)} SUCCEEDED in Nav2 and Gazebo pose checks.",
+                f"GOALS {args.start_index}-{args.end_index} SUCCEEDED in Nav2 and Gazebo pose checks.",
                 flush=True,
             )
         return 0
