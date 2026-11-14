@@ -92,19 +92,15 @@ controller_server:
       required_movement_angle: 0.10
       movement_time_allowance: 15.0
     general_goal_checker:
-      # Recheck XY during final heading alignment so AMCL updates cannot leave
-      # the robot outside the clicked-point tolerance after XY was first met.
-      stateful: false
+
+      stateful: true
       plugin: nav2_controller::SimpleGoalChecker
-      # Reserve some margin for AMCL error within the requested 10 cm truth check.
       xy_goal_tolerance: 0.05
-      # Goal orientations are inferred from the ordered clicked-point route.
       yaw_goal_tolerance: 0.35
     FollowPath:
       plugin: nav2_mppi_controller::MPPIController
       time_steps: 56
       model_dt: 0.05
-      # Keep the custom-critic MPPI cycle within the controller's 20 Hz budget.
       batch_size: 200
       iteration_count: 1
       temperature: 0.3
@@ -112,12 +108,11 @@ controller_server:
       open_loop: false
       visualize: false
       vx_std: 0.20
-      vy_std: 0.05
+      vy_std: 0.10
       wz_std: 0.20
       vx_max: 0.30
-      # Prefer forward motion while retaining a small reverse escape velocity.
-      vx_min: -0.05
-      vy_max: 0.08
+      vx_min: -0.10
+      vy_max: 0.15
       wz_max: 1.0
       ax_max: 1.5
       ax_min: -1.5
@@ -161,7 +156,7 @@ controller_server:
         enabled: true
         cost_power: 1
         cost_weight: 5.0
-        threshold_to_consider: 0.35
+        threshold_to_consider: 0.5
       GoalAngleCritic:
         enabled: true
         cost_power: 1
@@ -185,11 +180,10 @@ controller_server:
       PathAngleCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 10.0
+        cost_weight: 8.0
         offset_from_furthest: 5
         threshold_to_consider: 0.20
-        # Turn before entering narrow passages; the wheel envelope is not circular.
-        max_angle_to_furthest: 0.35
+        max_angle_to_furthest: 0.5
         mode: 0
       ConstraintCritic:
         enabled: true
@@ -203,7 +197,6 @@ controller_server:
       TwirlingCritic:
         enabled: true
         cost_power: 1
-        # Permit the forward-oriented profile to turn into the path promptly.
         cost_weight: 2.0
 local_costmap:
   local_costmap:
@@ -321,9 +314,7 @@ global_costmap:
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 2.0
-        # Keep the map route open through the measured 0.7 m shelf corridor;
-        # the footprint collision critic still enforces the robot envelope.
-        inflation_radius: 0.30
+        inflation_radius: 0.35
       always_send_full_costmap: true
 map_saver:
   ros__parameters:
