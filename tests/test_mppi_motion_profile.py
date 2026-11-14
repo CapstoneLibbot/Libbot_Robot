@@ -49,3 +49,20 @@ def test_simulation_speed_and_horizon_fit_local_costmap():
     assert 0.20 < vx <= follow["vx_max"]
     assert 0 < vy < vx
     assert follow["time_steps"] * follow["model_dt"] * vx < local["width"] / 2
+
+
+def test_obstacle_replanning_and_lateral_launch_overrides():
+    params = yaml.safe_load((BRINGUP / "config/nav2.yaml").read_text(encoding="utf-8"))
+    controller = params["controller_server"]["ros__parameters"]
+    assert controller["progress_checker"]["movement_time_allowance"] == 8.0
+    for name in ("navigation.launch.py", "simulation_navigation.launch.py"):
+        defaults = launch_defaults(name)
+        assert 0 < float(defaults["controller_vy_max"]) <= controller["FollowPath"]["vy_max"]
+        assert 0 < float(defaults["controller_vy_std"]) <= controller["FollowPath"]["vy_std"]
+    for name in ("local_costmap", "global_costmap"):
+        costmap = params[name][name]["ros__parameters"]
+        assert costmap["obstacle_layer"]["scan"]["max_obstacle_height"] >= 0.25
+        assert costmap["obstacle_layer"]["scan"]["inf_is_valid"]
+        assert costmap["obstacle_layer"]["scan"]["marking"]
+        assert costmap["obstacle_layer"]["scan"]["clearing"]
+        assert costmap["range_layer"]["enabled"]

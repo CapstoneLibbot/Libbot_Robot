@@ -90,7 +90,7 @@ controller_server:
       plugin: nav2_controller::PoseProgressChecker
       required_movement_radius: 0.03
       required_movement_angle: 0.10
-      movement_time_allowance: 15.0
+      movement_time_allowance: 8.0
     general_goal_checker:
 
       stateful: true
@@ -235,6 +235,9 @@ local_costmap:
         scan:
           topic: /scan
           data_type: LaserScan
+          # Scan points are transformed at the LiDAR height (~0.25 m).
+          max_obstacle_height: 2.0
+          inf_is_valid: true
           clearing: true
           marking: true
           raytrace_max_range: 3.0
@@ -289,6 +292,9 @@ global_costmap:
         scan:
           topic: /scan
           data_type: LaserScan
+          # Scan points are transformed at the LiDAR height (~0.25 m).
+          max_obstacle_height: 2.0
+          inf_is_valid: true
           clearing: true
           marking: true
           raytrace_max_range: 3.0
