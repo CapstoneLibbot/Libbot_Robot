@@ -10,6 +10,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from socketserver import StreamRequestHandler, ThreadingTCPServer
 from typing import Any
 
+from hardware.qr_code_reader import decode_qr_codes
+
 
 def _imx500_cameras() -> list[tuple[int, dict[str, Any]]]:
     from picamera2 import Picamera2
@@ -74,21 +76,49 @@ class CameraFrames:
         except Exception as exc:
             return {"status": "error", "message": str(exc)}
 
-    def scan(self, timeout_sec: float) -> dict[str, Any]:
+    def scan(
+        self,
+        timeout_sec: float,
+        scan_type: str = "BARCODE",
+        multiple: bool = False,
+        quiet_period_sec: float = 0.75,
+    ) -> dict[str, Any]:
         started = time.monotonic()
         sequence = -1
         try:
-            from PIL import Image
-            from pyzbar.pyzbar import decode
-
             deadline = started + max(timeout_sec, 0.0)
+            last_new_code_at = started
+            items: dict[tuple[str, int], dict[str, Any]] = {}
             while time.monotonic() <= deadline:
                 remaining = deadline - time.monotonic()
                 sequence, frame, _ = self.wait_for_frame(sequence, min(max(remaining, 0.05), 2.0))
-                for code in decode(Image.fromarray(frame)):
-                    value = code.data.decode("utf-8", errors="ignore").strip()
-                    if value:
-                        return {"status": "scanned", "value": value, "source": "imx500"}
+                if str(scan_type).upper() == "QR":
+                    for item in decode_qr_codes(frame):
+                        key = (item["qr_code"].casefold(), item["level_number"])
+                        if key not in items:
+                            items[key] = item
+                            last_new_code_at = time.monotonic()
+                    if multiple and items and time.monotonic() - last_new_code_at >= max(quiet_period_sec, 0.1):
+                        break
+                    if not multiple and items:
+                        return {"status": "scanned", "value": next(iter(items.values()))["qr_code"], "source": "imx500"}
+                else:
+                    from PIL import Image
+                    from pyzbar.pyzbar import decode
+
+                    for code in decode(Image.fromarray(frame)):
+                        value = code.data.decode("utf-8", errors="ignore").strip()
+                        if value:
+                            return {"status": "scanned", "value": value, "source": "imx500"}
+            if multiple:
+                result_items = list(items.values())
+                return {
+                    "status": "scanned" if result_items else "no_data",
+                    "value": None,
+                    "items": result_items,
+                    "source": "imx500",
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                }
             return {"status": "timeout", "value": None, "source": "imx500"}
         except TimeoutError:
             return {"status": "timeout", "value": None, "source": "imx500"}
@@ -146,9 +176,14 @@ class ScannerRequestHandler(StreamRequestHandler):
             elif payload.get("command") == "scan":
                 try:
                     timeout_sec = min(max(float(payload.get("timeout_sec", 5)), 0.0), 120.0)
-                    response = camera.scan(timeout_sec)
+                    quiet_period_sec = min(max(float(payload.get("quiet_period_sec", 0.75)), 0.1), 5.0)
+                    scan_type = str(payload.get("scan_type", "BARCODE")).upper()
+                    if scan_type not in {"BARCODE", "QR", "RFID", "CAMERA"}:
+                        response = {"status": "error", "message": f"Unsupported scan_type '{scan_type}'."}
+                    else:
+                        response = camera.scan(timeout_sec, scan_type, bool(payload.get("multiple", False)), quiet_period_sec)
                 except (TypeError, ValueError):
-                    response = {"status": "error", "message": "timeout_sec must be numeric."}
+                    response = {"status": "error", "message": "timeout_sec and quiet_period_sec must be numeric."}
             else:
                 response = {"status": "error", "message": "Unsupported scanner command."}
         except Exception as exc:

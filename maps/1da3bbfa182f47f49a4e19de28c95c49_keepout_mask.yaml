@@ -1,0 +1,7 @@
+image: 1da3bbfa182f47f49a4e19de28c95c49_keepout_mask.pgm
+resolution: 0.0500000007451
+origin: [-7.58949456001, -13.3257736885, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
+mode: trinary
