@@ -397,7 +397,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertEqual(len(root.findall(".//PipelineSequence")), 1)
                 rate_controller = root.find(".//PipelineSequence/RateController")
                 self.assertIsNotNone(rate_controller)
-                self.assertEqual(rate_controller.attrib["hz"], "4.0")
+                self.assertEqual(rate_controller.attrib["hz"], "1.0")
                 compute = computes[0]
                 follow = root.find(".//FollowPath")
                 self.assertEqual(compute.attrib[goal_input], "{" + goal_input + "}")
@@ -405,7 +405,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertEqual(follow.attrib["error_code_id"], "{follow_path_error_code}")
                 recovery = root.find("./BehaviorTree/RecoveryNode")
                 self.assertIsNotNone(recovery)
-                self.assertEqual(recovery.attrib["number_of_retries"], "6")
+                self.assertEqual(recovery.attrib["number_of_retries"], "10")
                 tags = [element.tag for element in root.iter()]
                 self.assertIn("PipelineSequence", tags)
                 self.assertIn("RateController", tags)
@@ -414,7 +414,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertNotIn("SequenceWithMemory", tags)
                 rate = root.find(".//RateController")
                 self.assertIsNotNone(rate)
-                self.assertEqual(rate.attrib["hz"], "4.0")
+                self.assertEqual(rate.attrib["hz"], "1.0")
                 backups = root.findall(".//BackUp")
                 self.assertEqual(len(backups), 1)
                 for backup in backups:
@@ -440,6 +440,9 @@ class Nav2ConfigurationTests(unittest.TestCase):
                     ["1.5708", "-1.5708"],
                 )
                 self.assertTrue(all(spin.attrib["time_allowance"] == "6.0" for spin in spins))
+                planner_recovery = root.find(".//Sequence[@name='WaitForObstaclesOnPlannerFailure']")
+                self.assertIsNotNone(planner_recovery)
+                self.assertEqual(planner_recovery.find("Wait").attrib["wait_duration"], "2.0")
                 self.assertEqual(len(root.findall(".//Wait")), 5)
                 self.assertEqual(len(root.findall(".//WouldAPlannerRecoveryHelp")), 2)
                 self.assertEqual(len(root.findall(".//WouldAControllerRecoveryHelp")), 2)
@@ -449,11 +452,10 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 }
                 self.assertEqual(costmap_services, {
                     "local_costmap/clear_entirely_local_costmap",
-                    "global_costmap/clear_entirely_global_costmap",
                 })
                 self.assertEqual(
                     [node.attrib["wait_duration"] for node in root.findall(".//Wait")],
-                    ["0.5", "0.5", "0.5", "0.5", "2.0"],
+                    ["2.0", "0.5", "0.5", "0.5", "2.0"],
                 )
 
     def test_launch_uses_installed_trees_and_holds_navigation_lifecycle(self):
@@ -478,7 +480,41 @@ class Nav2ConfigurationTests(unittest.TestCase):
         )
 
     def test_nav2_tuning_matches_replanning_motion_policy(self):
-        config = (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
+        config_text = (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
+        config = yaml.safe_load(
+            config_text
+        )
+        amcl = config["amcl"]["ros__parameters"]
+        self.assertEqual(amcl["robot_model_type"], "nav2_amcl::OmniMotionModel")
+
+        controller = config["controller_server"]["ros__parameters"]
+        self.assertEqual(controller["controller_frequency"], 20.0)
+        follow = controller["FollowPath"]
+        self.assertEqual(
+            follow["plugin"], "nav2_mppi_controller::MPPIController"
+        )
+        self.assertEqual(follow["motion_model"], "Omni")
+        self.assertEqual(follow["model_dt"], 0.05)
+        self.assertEqual(follow["time_steps"], 56)
+        self.assertEqual(follow["batch_size"], 1000)
+        self.assertFalse(follow["visualize"])
+        self.assertEqual(follow["vx_max"], 0.40)
+        self.assertEqual(follow["vx_min"], -0.40)
+        self.assertEqual(follow["vy_max"], 0.40)
+        self.assertEqual(follow["wz_max"], 1.0)
+        self.assertIn("OmniConstraintCritic", follow["critics"])
+        self.assertIn("MecanumCritic", follow["critics"])
+        self.assertNotIn("PathAngleCritic", follow["critics"])
+        self.assertNotIn("PreferForwardCritic", follow["critics"])
+        self.assertTrue(follow["PathAlignCritic"]["use_path_orientations"])
+        self.assertEqual(follow["MecanumCritic"]["vx_max"], 0.40)
+        self.assertEqual(follow["MecanumCritic"]["vy_max"], 0.40)
+        self.assertEqual(follow["MecanumCritic"]["wz_max"], 1.33)
+
+        smoother = config["velocity_smoother"]["ros__parameters"]
+        self.assertEqual(smoother["max_velocity"], [0.40, 0.40, 1.0])
+        self.assertEqual(smoother["min_velocity"], [-0.40, -0.40, -1.0])
+
         expected = (
             "publish_zero_velocity: true",
             "plugin: nav2_controller::PoseProgressChecker",
@@ -489,20 +525,18 @@ class Nav2ConfigurationTests(unittest.TestCase):
             "stateful: true",
             "xy_goal_tolerance: 0.10",
             "yaw_goal_tolerance: 0.20",
-            "rotate_to_heading_angular_vel: 0.8",
-            "rotate_to_heading_min_angle: 0.524",
-            "max_angular_accel: 4.0",
             "max_rotational_vel: 0.5",
             "min_rotational_vel: 0.2",
             "rotational_acc_lim: 2.0",
             "- -4.0",
-            "allow_reversing: false",
             "allow_unknown: false",
         )
         for value in expected:
             with self.subTest(setting=value):
-                self.assertIn(value, config)
-        behavior_config = config.split("behavior_server:", 1)[1].split("waypoint_follower:", 1)[0]
+                self.assertIn(value, config_text)
+        behavior_config = config_text.split("behavior_server:", 1)[1].split(
+            "waypoint_follower:", 1
+        )[0]
         self.assertIn("- spin", behavior_config)
         self.assertIn("- backup", behavior_config)
         self.assertIn("- wait", behavior_config)
@@ -553,10 +587,10 @@ class Nav2ConfigurationTests(unittest.TestCase):
             (BRINGUP / "config" / "nav2.yaml").read_text(encoding="utf-8")
         )
         expected_footprint = [
-            [0.15, 0.15],
-            [0.15, -0.15],
-            [-0.15, -0.15],
-            [-0.15, 0.15],
+            [0.165, 0.1825],
+            [0.165, -0.1825],
+            [-0.165, -0.1825],
+            [-0.165, 0.1825],
         ]
         for costmap_name in ("local_costmap", "global_costmap"):
             with self.subTest(costmap=costmap_name):
@@ -578,10 +612,10 @@ class Nav2ConfigurationTests(unittest.TestCase):
         self.assertEqual(
             yaml.safe_load(monitor_config["FootprintApproach"]["points"]),
             [
-                [0.165, 0.165],
-                [0.165, -0.165],
-                [-0.165, -0.165],
-                [-0.165, 0.165],
+                [0.18, 0.1975],
+                [0.18, -0.1975],
+                [-0.18, -0.1975],
+                [-0.18, 0.1975],
             ],
         )
         self.assertEqual(monitor_config["observation_sources"], ["scan"])
@@ -609,8 +643,137 @@ class Nav2ConfigurationTests(unittest.TestCase):
         self.assertIn("'collision_monitor.launch.py'", mapping_launch)
         self.assertIn("'cmd_vel_topic': '/cmd_vel_safe'", mapping_launch)
         self.assertIn('package="nav2_collision_monitor"', monitor_launch)
+        self.assertIn('"collision_monitor_params_file"', monitor_launch)
+        self.assertNotIn('"params_file"', monitor_launch)
         self.assertIn('"autostart": True', monitor_launch)
         self.assertIn("declare_parameter('cmd_vel_topic', '/cmd_vel_safe')", bridge)
+
+    def test_mecanum_description_and_simulation_command_path(self):
+        description = ET.parse(
+            ROOT
+            / "ros2_ws"
+            / "src"
+            / "libot_description"
+            / "urdf"
+            / "libot_core.xacro"
+        ).getroot()
+        xacro_ns = {"xacro": "http://www.ros.org/wiki/xacro"}
+        wheels = description.findall(".//xacro:mecanum_wheel", xacro_ns)
+        self.assertEqual(len(wheels), 4)
+        wheel_joint_axis = description.find(
+            ".//xacro:macro[@name='mecanum_wheel']/link/joint/axis", xacro_ns
+        )
+        self.assertIsNotNone(wheel_joint_axis)
+        self.assertEqual(wheel_joint_axis.attrib["xyz"], "0 1 0")
+        wheel_positions = {
+            wheel.attrib["corner"]: (
+                float(wheel.attrib["x"]),
+                float(wheel.attrib["y"]),
+            )
+            for wheel in wheels
+        }
+        self.assertEqual(
+            wheel_positions,
+            {
+                "front_left": (0.135, 0.165),
+                "front_right": (0.135, -0.165),
+                "rear_left": (-0.135, 0.165),
+                "rear_right": (-0.135, -0.165),
+            },
+        )
+
+        gazebo = (
+            ROOT
+            / "ros2_ws"
+            / "src"
+            / "libot_description"
+            / "urdf"
+            / "libot_gazebo.xacro"
+        ).read_text(encoding="utf-8")
+        self.assertIn("gz-sim-mecanum-drive-system", gazebo)
+        self.assertIn("<wheelbase>0.27</wheelbase>", gazebo)
+        self.assertIn("<wheel_separation>0.33</wheel_separation>", gazebo)
+        self.assertIn("<wheel_radius>0.03</wheel_radius>", gazebo)
+        self.assertNotIn("DiffDrive", gazebo)
+
+        simulation_launch = (
+            BRINGUP / "launch" / "simulation_navigation.launch.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"collision_monitor.launch.py"', simulation_launch)
+        self.assertIn('"use_sim_time": "true"', simulation_launch)
+        bridge = yaml.safe_load(
+            (BRINGUP / "config" / "ros_gz_bridge.yaml").read_text(encoding="utf-8")
+        )
+        command_bridge = next(
+            entry for entry in bridge if entry["gz_topic_name"] == "/cmd_vel"
+        )
+        self.assertEqual(command_bridge["ros_topic_name"], "/cmd_vel_safe")
+        self.assertEqual(
+            command_bridge["direction"],
+            "ROS_TO_GZ",
+        )
+
+        dependencies = (BRINGUP / "package.xml").read_text(encoding="utf-8")
+        self.assertIn(
+            "<exec_depend>nav2_mppi_controller</exec_depend>", dependencies
+        )
+        self.assertIn(
+            "<exec_depend>libot_mppi_critics</exec_depend>", dependencies
+        )
+
+        compat = ROOT / "ros2_ws" / "src" / "libot_mppi_critics"
+        compat_manifest = ET.parse(compat / "package.xml").getroot()
+        self.assertEqual(compat_manifest.findtext("name"), "libot_mppi_critics")
+        compat_build = (compat / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertIn(
+            "mppi::critics::OmniConstraintCritic",
+            (compat / "omni_constraint_critic.xml").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "mppi::critics::MecanumCritic",
+            (compat / "mecanum_critic.xml").read_text(encoding="utf-8"),
+        )
+        self.assertIn("if(COMPAT_SOURCES)", compat_build)
+
+        run_instructions = (ROOT / "run.md").read_text(encoding="utf-8")
+        mapping_instructions = (ROOT / "MAPPING_WORKFLOW.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("src/libot_mppi_critics", run_instructions)
+        self.assertIn("libot_mppi_critics", mapping_instructions)
+
+    def test_lidar_scan_plane_is_above_the_chassis(self):
+        description = ET.parse(
+            ROOT
+            / "ros2_ws"
+            / "src"
+            / "libot_description"
+            / "urdf"
+            / "libot_core.xacro"
+        ).getroot()
+        base_link = description.find(".//link[@name='base_link']")
+        self.assertIsNotNone(base_link)
+        chassis_box = base_link.find("./collision/geometry/box")
+        chassis_origin = base_link.find("./collision/origin")
+        self.assertIsNotNone(chassis_box)
+        self.assertIsNotNone(chassis_origin)
+        chassis_height = float(chassis_box.attrib["size"].split()[2])
+        chassis_center = float(chassis_origin.attrib["xyz"].split()[2])
+
+        base_joint = description.find(".//joint[@name='base_footprint_to_base_link']/origin")
+        laser_joint = description.find(".//joint[@name='base_link_to_laser']/origin")
+        self.assertIsNotNone(base_joint)
+        self.assertIsNotNone(laser_joint)
+        base_z = float(base_joint.attrib["xyz"].split()[2])
+        laser_xyz = [float(value) for value in laser_joint.attrib["xyz"].split()]
+        chassis_top = base_z + chassis_center + chassis_height / 2.0
+        scan_height = base_z + laser_xyz[2]
+
+        self.assertAlmostEqual(laser_xyz[0], -0.10)
+        self.assertAlmostEqual(laser_xyz[1], 0.0)
+        self.assertAlmostEqual(scan_height, 0.25)
+        self.assertAlmostEqual(chassis_top, 0.22)
+        self.assertLess(chassis_top, scan_height)
 
 
 if __name__ == "__main__":

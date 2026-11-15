@@ -22,7 +22,7 @@ def generate_launch_description():
         DeclareLaunchArgument("backend_url", default_value="http://127.0.0.1:5205"),
         DeclareLaunchArgument("use_rviz", default_value="false"),
         DeclareLaunchArgument("headless", default_value="true"),
-        DeclareLaunchArgument("autostart_navigation", default_value="false"),
+        DeclareLaunchArgument("autostart_navigation", default_value="true"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(simulation),
             launch_arguments={"headless": LaunchConfiguration("headless")}.items(),
@@ -51,6 +51,7 @@ def generate_launch_description():
                 "use_rviz": LaunchConfiguration("use_rviz"),
                 "start_workflow_app": "false",
                 "autostart_navigation": LaunchConfiguration("autostart_navigation"),
+                "controller_profile": "diff_drive",
             }.items(),
         )]),
         ExecuteProcess(

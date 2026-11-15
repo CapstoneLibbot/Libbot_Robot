@@ -12,6 +12,7 @@ from std_msgs.msg import String
 from tf2_ros import TransformBroadcaster
 
 from libbot_stm32.protocol import parse_imu_line, parse_range_line
+from libbot_stm32.velocity_limits import clamp_velocity
 
 
 class STM32Bridge(Node):
@@ -33,6 +34,7 @@ class STM32Bridge(Node):
 
     ENCODER_TIMEOUT_SEC = 0.30
     ENCODER_PACKET_PERIOD_SEC = 0.02
+    ENCODER_DIAGNOSTIC_LOG_INTERVAL_SEC = 2.0
     ODOM_MAX_WHEEL_SPEED_MPS = 0.30
     ENCODER_JUMP_MARGIN = 1.5
     CMD_TIMEOUT_SEC = 0.50  # Safety stop command; STM32 needs its own watchdog
@@ -75,6 +77,7 @@ class STM32Bridge(Node):
         self.last_enc = None
         self.last_encoder_monotonic = None
         self.last_encoder_receive_monotonic = None
+        self.last_encoder_diagnostic_log = 0.0
         self.odom_vx = 0.0
         self.odom_vy = 0.0
         self.odom_wz = 0.0
@@ -103,9 +106,16 @@ class STM32Bridge(Node):
 
     def send_velocity(self, vx, vy, wz):
         requested = (vx, vy, wz)
-        vx = max(-self.STM32_MAX_VX_MPS, min(self.STM32_MAX_VX_MPS, vx))
-        vy = max(-self.STM32_MAX_VY_MPS, min(self.STM32_MAX_VY_MPS, vy))
-        wz = max(-self.STM32_MAX_WZ_RAD_S, min(self.STM32_MAX_WZ_RAD_S, wz))
+        vx, vy, wz = clamp_velocity(
+            vx,
+            vy,
+            wz,
+            maximums=(
+                self.STM32_MAX_VX_MPS,
+                self.STM32_MAX_VY_MPS,
+                self.STM32_MAX_WZ_RAD_S,
+            ),
+        )
 
         cmd = (
             f'VEL,{int(vx * 1000.0)},'
@@ -146,7 +156,7 @@ class STM32Bridge(Node):
             )
             return
         self.last_cmd_monotonic = time.monotonic()
-        self.command_is_active = any(abs(v) > 1e-6 for v in (vx, vy, wz))
+        self.command_is_active = any(v != 0.0 for v in (vx, vy, wz))
         self.send_velocity(vx, vy, wz)
 
     def command_watchdog(self):
@@ -349,16 +359,18 @@ class STM32Bridge(Node):
             return
         self.last_blocked_mask = blocked_mask
         self.publish_status(f'SAFETY_BLOCKED,{blocked_mask}')
-
     def process_encoder(self, line):
         try:
             parts = line.split(',')
             if len(parts) != 5:
+                self._log_encoder_diagnostic(
+                    f'Invalid encoder packet: expected ENC plus 4 counters, got {line[:80]}'
+                )
                 return
             enc = tuple(int(value) for value in parts[1:])
-            
+
         except ValueError:
-            self.get_logger().warning(f'Invalid encoder packet: {line[:80]}')
+            self._log_encoder_diagnostic(f'Invalid encoder packet: {line[:80]}')
             return
 
         now = time.monotonic()
@@ -431,15 +443,33 @@ class STM32Bridge(Node):
         self.odom_vy = dy / dt
         self.odom_wz = dtheta / dt
 
+    def _log_encoder_diagnostic(self, message):
+        now = time.monotonic()
+        if (
+            now - self.last_encoder_diagnostic_log
+            < self.ENCODER_DIAGNOSTIC_LOG_INTERVAL_SEC
+        ):
+            return
+        self.last_encoder_diagnostic_log = now
+        self.get_logger().warning(message)
+
     def publish_odom(self):
         now = self.get_clock().now()
-        if (self.last_encoder_receive_monotonic is None or
-                time.monotonic() - self.last_encoder_receive_monotonic > self.ENCODER_TIMEOUT_SEC):
+        encoder_timed_out = (
+            self.last_encoder_receive_monotonic is None
+            or time.monotonic() - self.last_encoder_receive_monotonic > self.ENCODER_TIMEOUT_SEC
+        )
+        if encoder_timed_out:
             self.odom_vx = 0.0
             self.odom_vy = 0.0
             self.odom_wz = 0.0
-            if self.last_encoder_receive_monotonic is not None and not self.last_encoder_timeout_logged:
-                self.get_logger().warning('Encoder timeout; odom twist set to zero (pose not reset)')
+            if not self.last_encoder_timeout_logged:
+                if self.last_encoder_receive_monotonic is None:
+                    message = 'No encoder packets received; odom pose will remain unchanged'
+                else:
+                    message = 'Encoder timeout; odom twist set to zero (pose not reset)'
+                self.get_logger().warning(message)
+                self.publish_status('ENCODER_TIMEOUT')
                 self.last_encoder_timeout_logged = True
 
         qz = math.sin(self.theta / 2.0)
