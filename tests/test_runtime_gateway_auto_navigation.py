@@ -10,6 +10,16 @@ from runtime_gateway import RobotRuntimeGateway
 
 
 class RuntimeGatewayAutoNavigationTests(unittest.TestCase):
+    def test_navigation_controller_profile_matches_runtime_drive_model(self):
+        self.assertEqual(
+            RobotRuntimeGateway._controller_profile_for_runtime("real"),
+            "mecanum",
+        )
+        self.assertEqual(
+            RobotRuntimeGateway._controller_profile_for_runtime("sim"),
+            "diff_drive",
+        )
+
     def test_sim_map_is_kept_locally_without_backend_delivery(self):
         gateway = RobotRuntimeGateway({"runtime": {"id": "sim"}})
         message = SimpleNamespace(

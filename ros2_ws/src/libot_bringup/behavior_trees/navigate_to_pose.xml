@@ -21,8 +21,8 @@
                       error_code_id="{follow_path_error_code}"/>
           <Sequence name="BackUpAndReplanOnControllerFailure">
             <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
-            <BackUp backup_dist="0.20" backup_speed="0.12"
-                    time_allowance="4.0"/>
+            <BackUp backup_dist="0.20" backup_speed="0.08"
+                    time_allowance="6.0"/>
             <Wait wait_duration="0.5"/>
             <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased"
                                error_code_id="{compute_path_error_code}"/>
@@ -39,8 +39,8 @@
           <RoundRobin name="NavigateRecoveryActions">
             <Sequence name="TurnAndRefreshSensors">
               <Fallback name="TurnToFreeSide">
-                <Spin spin_dist="1.5708" time_allowance="6.0"/>
-                <Spin spin_dist="-1.5708" time_allowance="6.0"/>
+                <Spin spin_dist="1.5708" time_allowance="8.0"/>
+                <Spin spin_dist="-1.5708" time_allowance="8.0"/>
               </Fallback>
               <Wait wait_duration="0.5"/>
             </Sequence>

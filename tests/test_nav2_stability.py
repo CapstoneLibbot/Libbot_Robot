@@ -405,7 +405,7 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 self.assertEqual(follow.attrib["error_code_id"], "{follow_path_error_code}")
                 recovery = root.find("./BehaviorTree/RecoveryNode")
                 self.assertIsNotNone(recovery)
-                self.assertEqual(recovery.attrib["number_of_retries"], "6")
+                self.assertEqual(recovery.attrib["number_of_retries"], "10")
                 tags = [element.tag for element in root.iter()]
                 self.assertIn("PipelineSequence", tags)
                 self.assertIn("RateController", tags)
@@ -440,6 +440,9 @@ class Nav2ConfigurationTests(unittest.TestCase):
                     ["1.5708", "-1.5708"],
                 )
                 self.assertTrue(all(spin.attrib["time_allowance"] == "6.0" for spin in spins))
+                planner_recovery = root.find(".//Sequence[@name='WaitForObstaclesOnPlannerFailure']")
+                self.assertIsNotNone(planner_recovery)
+                self.assertEqual(planner_recovery.find("Wait").attrib["wait_duration"], "2.0")
                 self.assertEqual(len(root.findall(".//Wait")), 5)
                 self.assertEqual(len(root.findall(".//WouldAPlannerRecoveryHelp")), 2)
                 self.assertEqual(len(root.findall(".//WouldAControllerRecoveryHelp")), 2)
@@ -449,11 +452,10 @@ class Nav2ConfigurationTests(unittest.TestCase):
                 }
                 self.assertEqual(costmap_services, {
                     "local_costmap/clear_entirely_local_costmap",
-                    "global_costmap/clear_entirely_global_costmap",
                 })
                 self.assertEqual(
                     [node.attrib["wait_duration"] for node in root.findall(".//Wait")],
-                    ["0.5", "0.5", "0.5", "0.5", "2.0"],
+                    ["2.0", "0.5", "0.5", "0.5", "2.0"],
                 )
 
     def test_launch_uses_installed_trees_and_holds_navigation_lifecycle(self):
