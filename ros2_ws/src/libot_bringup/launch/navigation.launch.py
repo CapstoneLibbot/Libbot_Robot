@@ -126,7 +126,7 @@ def generate_launch_description():
         DeclareLaunchArgument("controller_vy_std", default_value="0.08"),
         DeclareLaunchArgument("controller_ay_max", default_value="1.5"),
         DeclareLaunchArgument("controller_ay_min", default_value="-1.5"),
-        DeclareLaunchArgument("controller_vx_max", default_value="0.30"),
+        DeclareLaunchArgument("controller_vx_max", default_value="0.40"),
         DeclareLaunchArgument("controller_vx_std", default_value="0.20"),
         DeclareLaunchArgument("controller_ax_max", default_value="1.5"),
         DeclareLaunchArgument("controller_ax_min", default_value="-1.5"),
