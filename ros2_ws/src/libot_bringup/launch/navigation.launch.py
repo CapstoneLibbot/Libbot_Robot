@@ -2,12 +2,25 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+
+def _validate_controller_profile(context):
+    profile = LaunchConfiguration("controller_profile").perform(context)
+    if profile not in {"mecanum", "diff_drive"}:
+        raise RuntimeError(
+            "controller_profile must be either 'mecanum' or 'diff_drive'."
+        )
+    return []
 
 
 def generate_launch_description():
@@ -29,6 +42,15 @@ def generate_launch_description():
         "config",
         "nav2.yaml",
     )
+    controller_profile_params = PathJoinSubstitution(
+        [
+            bringup_share,
+            "config",
+            "controller_profiles",
+            LaunchConfiguration("controller_profile"),
+            "nav2.yaml",
+        ]
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -44,6 +66,11 @@ def generate_launch_description():
             "params_file",
             default_value=default_params,
             description="Absolute path to the Nav2 parameters file",
+        ),
+        DeclareLaunchArgument(
+            "controller_profile",
+            default_value="mecanum",
+            description="MPPI motion model profile: mecanum or diff_drive",
         ),
         DeclareLaunchArgument(
             "lidar_port",
@@ -87,14 +114,28 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "autostart_navigation",
-            default_value="false",
+            default_value="true",
             description="Automatically activate the navigation lifecycle nodes",
         ),
+        DeclareLaunchArgument(
+            "controller_motion_model",
+            default_value="Omni",
+            description="MPPI model; the Gazebo wheel-contact approximation can use DiffDrive",
+        ),
+        DeclareLaunchArgument("controller_vy_max", default_value="0.12"),
+        DeclareLaunchArgument("controller_vy_std", default_value="0.08"),
+        DeclareLaunchArgument("controller_ay_max", default_value="1.5"),
+        DeclareLaunchArgument("controller_ay_min", default_value="-1.5"),
+        DeclareLaunchArgument("controller_vx_max", default_value="0.30"),
+        DeclareLaunchArgument("controller_vx_std", default_value="0.20"),
+        DeclareLaunchArgument("controller_ax_max", default_value="1.5"),
+        DeclareLaunchArgument("controller_ax_min", default_value="-1.5"),
         DeclareLaunchArgument(
             "robot_app_path",
             default_value="/ros2_ws/robot_app/main.py",
             description="Absolute path to robot_app/main.py",
         ),
+        OpaqueFunction(function=_validate_controller_profile),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(robot_launch),
             condition=IfCondition(LaunchConfiguration("use_hardware")),
@@ -233,7 +274,36 @@ def generate_launch_description():
             output="screen",
             parameters=[
                 LaunchConfiguration("params_file"),
+                controller_profile_params,
                 {"use_sim_time": LaunchConfiguration("use_sim_time")},
+                {
+                    "use_sim_time": LaunchConfiguration("use_sim_time"),
+                    "FollowPath.motion_model": LaunchConfiguration("controller_motion_model"),
+                    "FollowPath.vx_max": ParameterValue(
+                        LaunchConfiguration("controller_vx_max"), value_type=float
+                    ),
+                    "FollowPath.vx_std": ParameterValue(
+                        LaunchConfiguration("controller_vx_std"), value_type=float
+                    ),
+                    "FollowPath.ax_max": ParameterValue(
+                        LaunchConfiguration("controller_ax_max"), value_type=float
+                    ),
+                    "FollowPath.ax_min": ParameterValue(
+                        LaunchConfiguration("controller_ax_min"), value_type=float
+                    ),
+                    "FollowPath.vy_max": ParameterValue(
+                        LaunchConfiguration("controller_vy_max"), value_type=float
+                    ),
+                    "FollowPath.vy_std": ParameterValue(
+                        LaunchConfiguration("controller_vy_std"), value_type=float
+                    ),
+                    "FollowPath.ay_max": ParameterValue(
+                        LaunchConfiguration("controller_ay_max"), value_type=float
+                    ),
+                    "FollowPath.ay_min": ParameterValue(
+                        LaunchConfiguration("controller_ay_min"), value_type=float
+                    ),
+                },
             ],
             remappings=[("cmd_vel", "cmd_vel_nav")],
         ),
