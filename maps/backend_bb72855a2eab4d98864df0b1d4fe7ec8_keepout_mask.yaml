@@ -1,0 +1,7 @@
+image: backend_bb72855a2eab4d98864df0b1d4fe7ec8_keepout_mask.pgm
+resolution: 0.0500000007451
+origin: [-0.467659902497, -2.09909234597, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
+mode: trinary

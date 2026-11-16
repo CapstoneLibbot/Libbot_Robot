@@ -27,7 +27,7 @@ Cấu trúc hiện tại:
   - thư mục `maps`
 - `ros2_ws/src/libot_description`
   - URDF robot
-- `ros2_ws/src/libot_stm32`
+- `ros2_ws/src/libbot_stm32`
   - bridge ROS ↔ STM32
 
 ### 2.2 Thành phần cần có
@@ -37,7 +37,7 @@ Cấu trúc hiện tại:
 - `rviz2`
 - `teleop_twist_keyboard`
 - `rplidar_ros` hoặc driver lidar tương ứng
-- `libot_stm32` bridge
+- `libbot_stm32` bridge
 
 ---
 
@@ -47,20 +47,21 @@ Cấu trúc hiện tại:
 
 ```bash
 sudo apt update
-sudo apt install ros-humble-slam-toolbox ros-humble-teleop-twist-keyboard ros-humble-rviz2
-sudo apt install ros-humble-rplidar-ros
+sudo apt install ros-jazzy-slam-toolbox ros-jazzy-teleop-twist-keyboard ros-jazzy-rviz2
+sudo apt install ros-jazzy-rplidar-ros
 ```
 
 Nếu cần lưu map bằng `nav2_map_server`:
 
 ```bash
-sudo apt install ros-humble-navigation2 ros-humble-nav2-map-server
+sudo apt install ros-jazzy-navigation2 ros-jazzy-nav2-map-server
 ```
 
 ### 3.2 Package trong workspace
 
 - `libot_description`
-- `libot_stm32`
+- `libbot_stm32`
+- `libot_mppi_critics`
 - `libot_bringup`
 
 ---
@@ -140,7 +141,7 @@ ros2_ws/src/libot_bringup/launch/mapping.launch.py
 
 Nội dung launch cần khởi động:
 - `robot_state_publisher`
-- `libot_stm32` bridge
+- `libbot_stm32` bridge
 - lidar driver (`rplidar_ros` hoặc tương đương)
 - `slam_toolbox`
 - `rviz2`
@@ -165,8 +166,8 @@ ros2 launch libot_bringup mapping.launch.py stm32_port:=/dev/ttyACM0 lidar_port:
 
 ```bash
 cd /ros2_ws
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select libot_description libot_stm32 libot_bringup
+source /opt/ros/jazzy/setup.bash
+colcon build --symlink-install --packages-select libot_description libbot_stm32 libot_mppi_critics libot_bringup
 source install/setup.bash
 ```
 
@@ -177,8 +178,8 @@ cd /path/to/libot_pi
 docker compose -f docker/compose.yaml --profile hardware up -d
 docker exec -it <container_name> bash
 cd /ros2_ws
-source /opt/ros/humble/setup.bash
-colcon build --symlink-install --packages-select libot_description libot_stm32 libot_bringup
+source /opt/ros/jazzy/setup.bash
+colcon build --symlink-install --packages-select libot_description libbot_stm32 libot_mppi_critics libot_bringup
 source install/setup.bash
 ```
 
@@ -309,7 +310,7 @@ Nếu các thành phần này đồng bộ tốt, robot sẽ tự động vẽ b
 
 - `ros2_ws/src/libot_bringup/launch/mapping.launch.py`
 - `ros2_ws/src/libot_bringup/config/mapper_params_online_async.yaml`
-- `ros2_ws/src/libot_stm32/libot_stm32/stm32_bridge.py`
+- `ros2_ws/src/libbot_stm32/libbot_stm32/stm32_bridge.py`
 - `ros2_ws/src/libot_description/urdf/libot.urdf.xacro`
 
 ---
@@ -317,7 +318,7 @@ Nếu các thành phần này đồng bộ tốt, robot sẽ tự động vẽ b
 ## 15. Lệnh khởi chạy nhanh
 
 ```bash
-source /opt/ros/humble/setup.bash
+source /opt/ros/jazzy/setup.bash
 cd /ros2_ws
 source install/setup.bash
 ros2 launch libot_bringup mapping.launch.py

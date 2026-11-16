@@ -1,0 +1,7 @@
+<class_libraries>
+  <library path="ot_mppi_critics">
+    <class type="mppi::critics::OmniConstraintCritic" base_class_type="mppi::critics::CriticFunction">
+      <description>Omni velocity constraint critic</description>
+    </class>
+  </library>
+</class_libraries>

@@ -23,13 +23,19 @@ def generate_launch_description():
         "launch",
         "collision_monitor.launch.py",
     )
+    foxglove_bridge_launch = os.path.join(
+        get_package_share_directory("libot_bringup"),
+        "launch",
+        "foxglove_bridge.launch.py",
+    )
 
     lidar_port = LaunchConfiguration("lidar_port")
     stm32_port = LaunchConfiguration("stm32_port")
     use_sim_time = LaunchConfiguration("use_sim_time")
     start_workflow_app = LaunchConfiguration("start_workflow_app")
     robot_app_path = LaunchConfiguration("robot_app_path")
-
+    start_foxglove_bridge = LaunchConfiguration("start_foxglove_bridge")
+    foxglove_port = LaunchConfiguration("foxglove_port")
     return LaunchDescription([
         DeclareLaunchArgument(
             "lidar_port",
@@ -56,6 +62,16 @@ def generate_launch_description():
             default_value="/ros2_ws/robot_app/main.py",
             description="Absolute path to robot_app/main.py",
         ),
+        DeclareLaunchArgument(
+            "start_foxglove_bridge",
+            default_value="true",
+            description="Start the read-only Foxglove WebSocket bridge",
+        ),
+        DeclareLaunchArgument(
+            "foxglove_port",
+            default_value="8765",
+            description="TCP port used by Foxglove Studio on the robot network",
+        ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(description_launch),
         ),
@@ -79,6 +95,14 @@ def generate_launch_description():
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(collision_monitor_launch),
             launch_arguments={"use_sim_time": use_sim_time}.items(),
+        ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(foxglove_bridge_launch),
+            launch_arguments={
+                "port": foxglove_port,
+                "use_sim_time": use_sim_time,
+            }.items(),
+            condition=IfCondition(start_foxglove_bridge),
         ),
         Node(
             package="libbot_stm32",

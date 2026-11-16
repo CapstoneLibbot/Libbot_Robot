@@ -9,6 +9,7 @@ from urllib import parse, request
 
 from core.context import RobotContext
 from steps.base_step import BaseStep
+from steps.inventory_actions import INVENTORY_ACTIONS, InventoryActionClient
 
 
 class ProcessDataStep(BaseStep):
@@ -124,6 +125,16 @@ class ProcessDataStep(BaseStep):
                         "reportType": payload.get("report_type", "INVENTORY"),
                     },
                 )
+            elif self.operation in INVENTORY_ACTIONS:
+                inventory_result = InventoryActionClient(self._json_request, self._idempotency_key).execute(
+                    self.operation,
+                    payload if isinstance(payload, dict) else {},
+                    context,
+                    runtime_id,
+                    base_url,
+                )
+                context.set("processed_data", inventory_result)
+                return inventory_result
             elif self.operation == "RECORD_PATROL_OBSERVATION":
                 self._require_base_url(base_url)
                 data = self._json_request(

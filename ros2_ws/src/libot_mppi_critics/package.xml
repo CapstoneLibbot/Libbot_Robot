@@ -1,0 +1,21 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>libot_mppi_critics</name>
+  <version>0.1.0</version>
+  <description>Jazzy MPPI critic compatibility plugins for the LiBot mecanum base.</description>
+  <maintainer email="robotics@example.com">LiBot Robotics</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>nav2_mppi_controller</depend>
+  <depend>nav2_core</depend>
+  <depend>nav2_costmap_2d</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>xtensor</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

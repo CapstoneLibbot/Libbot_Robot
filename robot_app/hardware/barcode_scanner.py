@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
+from hardware.qr_code_reader import decode_qr_codes
+
 
 class BarcodeScanner:
     """Interface for barcode or QR code scanning devices."""
@@ -17,16 +19,20 @@ class BarcodeScanner:
         self.mock_value = self.settings.get("mock_value")
         self.encoding = self.settings.get("encoding", "utf-8")
 
-    def scan(self, timeout_sec: float = 5.0) -> Dict[str, Any]:
+    def scan(self, timeout_sec: float = 5.0, scan_type: str = "BARCODE", multiple: bool = False) -> Dict[str, Any]:
         started_at = time.monotonic()
 
         if self.mock_value not in (None, ""):
-            return self._result("scanned", self.mock_value, "mock", started_at)
+            value = self.mock_value
+            if multiple and isinstance(value, list):
+                return {"status": "scanned", "value": None, "items": value, "source": "mock",
+                        "duration_ms": int((time.monotonic() - started_at) * 1000)}
+            return self._result("scanned", value, "mock", started_at)
 
         if self.device == "imx500":
-            return self._scan_imx500(timeout_sec, started_at)
+            return self._scan_imx500(timeout_sec, started_at, scan_type, multiple)
         if str(self.device or "").startswith("imx500-tcp://"):
-            return self._scan_imx500_tcp(timeout_sec, started_at)
+            return self._scan_imx500_tcp(timeout_sec, started_at, scan_type, multiple)
 
         if not self.device or self.device == "camera":
             return self._result("timeout", None, "unconfigured", started_at)
@@ -71,12 +77,23 @@ class BarcodeScanner:
         except Exception as exc:
             return {"status": "error", "message": f"IMX500 camera unavailable: {exc}"}
 
-    def _scan_imx500_tcp(self, timeout_sec: float, started_at: float) -> Dict[str, Any]:
+    def _scan_imx500_tcp(
+        self,
+        timeout_sec: float,
+        started_at: float,
+        scan_type: str,
+        multiple: bool,
+    ) -> Dict[str, Any]:
         try:
             host, port = self._scanner_address(str(self.device))
             with socket.create_connection((host, port), timeout=3) as connection:
                 connection.settimeout(max(timeout_sec, 0.5) + 3)
-                connection.sendall((json.dumps({"command": "scan", "timeout_sec": timeout_sec}) + "\n").encode("utf-8"))
+                connection.sendall((json.dumps({
+                    "command": "scan",
+                    "timeout_sec": timeout_sec,
+                    "scan_type": scan_type,
+                    "multiple": multiple,
+                }) + "\n").encode("utf-8"))
                 response = self._read_json_line(connection)
             response.setdefault("source", "imx500")
             response.setdefault("duration_ms", int((time.monotonic() - started_at) * 1000))
@@ -111,12 +128,16 @@ class BarcodeScanner:
             raise ValueError("Scanner service response must be a JSON object.")
         return response
 
-    def _scan_imx500(self, timeout_sec: float, started_at: float) -> Dict[str, Any]:
+    def _scan_imx500(
+        self,
+        timeout_sec: float,
+        started_at: float,
+        scan_type: str,
+        multiple: bool,
+    ) -> Dict[str, Any]:
         camera = None
         try:
             from picamera2 import Picamera2
-            from PIL import Image
-            from pyzbar.pyzbar import decode
 
             camera = Picamera2()
             camera.configure(camera.create_preview_configuration(
@@ -124,14 +145,34 @@ class BarcodeScanner:
             ))
             camera.start()
             deadline = started_at + max(timeout_sec, 0.0)
+            quiet_period_sec = float(self.settings.get("quiet_period_sec", 0.75))
+            last_new_code_at = started_at
+            items: dict[tuple[str, int], dict[str, Any]] = {}
             while time.monotonic() <= deadline:
                 frame = camera.capture_array()
-                codes = decode(Image.fromarray(frame))
-                if codes:
-                    value = codes[0].data.decode(self.encoding, errors="ignore").strip()
-                    if value:
-                        return self._result("scanned", value, "imx500", started_at)
+                if str(scan_type).upper() == "QR":
+                    for item in decode_qr_codes(frame, self.encoding):
+                        key = (item["qr_code"].casefold(), item["level_number"])
+                        if key not in items:
+                            items[key] = item
+                            last_new_code_at = time.monotonic()
+                    if multiple and items and time.monotonic() - last_new_code_at >= quiet_period_sec:
+                        return self._multi_result(list(items.values()), "imx500", started_at)
+                    if not multiple and items:
+                        item = next(iter(items.values()))
+                        return self._result("scanned", item["qr_code"], "imx500", started_at)
+                else:
+                    from PIL import Image
+                    from pyzbar.pyzbar import decode
+
+                    codes = decode(Image.fromarray(frame))
+                    if codes:
+                        value = codes[0].data.decode(self.encoding, errors="ignore").strip()
+                        if value:
+                            return self._result("scanned", value, "imx500", started_at)
                 time.sleep(0.05)
+            if multiple:
+                return self._multi_result(list(items.values()), "imx500", started_at)
             return self._result("timeout", None, "imx500", started_at)
         except Exception as exc:
             return {
@@ -148,6 +189,15 @@ class BarcodeScanner:
                     camera.close()
                 except Exception:
                     pass
+
+    def _multi_result(self, items: list[dict[str, Any]], source: str, started_at: float) -> Dict[str, Any]:
+        return {
+            "status": "scanned" if items else "no_data",
+            "value": None,
+            "items": items,
+            "source": source,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+        }
 
     def _scan_text_device(self, path: Path, timeout_sec: float, started_at: float) -> Dict[str, Any]:
         deadline = started_at + max(timeout_sec, 0.0)

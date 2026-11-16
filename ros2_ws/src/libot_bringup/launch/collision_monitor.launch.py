@@ -17,7 +17,9 @@ def generate_launch_description():
         "collision_monitor.yaml",
     )
     use_sim_time = LaunchConfiguration("use_sim_time")
-    params_file = LaunchConfiguration("params_file")
+    collision_monitor_params_file = LaunchConfiguration(
+        "collision_monitor_params_file"
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -26,7 +28,7 @@ def generate_launch_description():
             description="Use the simulation clock",
         ),
         DeclareLaunchArgument(
-            "params_file",
+            "collision_monitor_params_file",
             default_value=default_params,
             description="Collision Monitor parameter file",
         ),
@@ -38,7 +40,7 @@ def generate_launch_description():
             respawn=True,
             respawn_delay=2.0,
             parameters=[
-                params_file,
+                collision_monitor_params_file,
                 {"use_sim_time": ParameterValue(use_sim_time, value_type=bool)},
             ],
         ),
