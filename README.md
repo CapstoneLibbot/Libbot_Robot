@@ -1,5 +1,16 @@
 # LiBot - Autonomous Library Robot (Raspberry Pi Client)
 
+## Gazebo map in Dispatch
+
+Start the backend and frontend, then launch the ROS simulation with
+`ros2 launch libot_bringup simulation_navigation.launch.py backend_url:=http://<backend-host>:5205 autostart_navigation:=true`.
+The backend URL must be reachable from the ROS environment (inside a container,
+`127.0.0.1` refers to that container). The backend must also reach the SIM
+gateway at its configured `RobotRuntimes:sim` host and TCP port. The gateway
+forwards ROS `/map` and telemetry to the backend; Dispatch polls the SIM map
+and shows the latest occupancy grid. If it says it is waiting for a map, check
+that the map server is publishing `/map` and the gateway can reach the backend.
+
 ![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)
 ![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%204-cc2244)
 ![License](https://img.shields.io/badge/license-MIT-green)

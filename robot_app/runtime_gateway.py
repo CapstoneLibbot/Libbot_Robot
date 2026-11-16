@@ -2380,8 +2380,7 @@ class RobotRuntimeGateway:
         with self._lock:
             self._map = grid
             should_post = (
-                self.runtime_id == "real"
-                and now - self._last_map_post >= 1.0
+                now - self._last_map_post >= 1.0
             )
             if should_post:
                 self._last_map_post = now
@@ -2465,8 +2464,6 @@ class RobotRuntimeGateway:
             time.sleep(1.0)
 
     def _retry_map_delivery(self) -> None:
-        if self.runtime_id != "real":
-            return
         now = time.monotonic()
         with self._lock:
             if self._map is None or now - self._last_map_post < 5.0:
