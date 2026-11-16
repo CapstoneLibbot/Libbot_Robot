@@ -155,7 +155,7 @@ controller_server:
       GoalCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 5.0
+        cost_weight: 8.0
         threshold_to_consider: 0.5
       GoalAngleCritic:
         enabled: true
