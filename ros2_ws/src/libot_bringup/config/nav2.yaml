@@ -109,11 +109,11 @@ controller_server:
       visualize: false
       vx_std: 0.20
       vy_std: 0.10
-      wz_std: 0.20
+      wz_std: 0.40
       vx_max: 0.40
       vx_min: -0.40
       vy_max: 0.15
-      wz_max: 1.0
+      wz_max: 1.5
       ax_max: 1.5
       ax_min: -1.5
       ay_max: 1.5
@@ -372,7 +372,7 @@ behavior_server:
     robot_base_frame: base_footprint
     transform_tolerance: 0.1
     simulate_ahead_time: 2.0
-    max_rotational_vel: 0.5
+    max_rotational_vel: 0.6
     min_rotational_vel: 0.2
     rotational_acc_lim: 2.0
 waypoint_follower:
@@ -394,11 +394,11 @@ velocity_smoother:
     max_velocity:
     - 0.40
     - 0.30
-    - 1.0
+    - 1.5
     min_velocity:
     - -0.40
     - -0.40
-    - -1.0
+    - -1.5
     max_accel:
     - 1.5
     - 1.5
