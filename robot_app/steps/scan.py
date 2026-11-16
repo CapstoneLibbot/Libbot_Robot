@@ -21,6 +21,7 @@ class ScanStep(BaseStep):
         self.context_key = self.config.get("context_key", "scan_input")
         self.output_key = self.config.get("output_key", "scanned_code")
         self.expected_prefix = self.config.get("expected_prefix")
+        self.expected_value = self.config.get("expected_value")
         scanner_settings = {
             "device": self.config.get("device", self.sensor),
             "mock_value": self.config.get("mock_value"),
@@ -56,7 +57,12 @@ class ScanStep(BaseStep):
             return self._execute_qr_book_scan(scan_result, context, started_at)
 
         value = scan_result.get("value")
-        validation_error = self._validate(value)
+        expected_value = self.resolve(context, self.expected_value) if self.expected_value is not None else None
+        validation_error = (
+            "Expected scan value could not be resolved."
+            if self.expected_value is not None and expected_value in (None, "")
+            else self._validate(value, expected_value)
+        )
         status = scan_result.get("status", "timeout")
         if validation_error is not None:
             status = "error"
@@ -197,9 +203,11 @@ class ScanStep(BaseStep):
         }
         return payload
 
-    def _validate(self, value: Any) -> Optional[str]:
+    def _validate(self, value: Any, expected_value: Any = None) -> Optional[str]:
         if value in (None, ""):
             return None
+        if expected_value is not None and str(value) != str(expected_value):
+            return "Scanned barcode does not match the selected book."
         if self.expected_prefix and not str(value).startswith(str(self.expected_prefix)):
             return f"Scanned value does not start with expected prefix '{self.expected_prefix}'."
         return None

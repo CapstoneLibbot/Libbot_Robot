@@ -39,6 +39,50 @@ def test_real_scan_does_not_consume_simulated_fixture(monkeypatch):
     assert context.get("scan_queue") == ["BOOK-123"]
 
 
+def test_scan_step_accepts_selected_book_barcode():
+    context = RobotContext()
+    context.set("book_detail", {"selectedBookItem": {"barcode": "B00001"}})
+
+    result = ScanStep({
+        "type": "SCAN",
+        "mock_value": "B00001",
+        "expected_value": "${book_detail.selectedBookItem.barcode}",
+    }).execute(context)
+
+    assert result["status"] == "scanned"
+    assert context.get("scanned_code") == "B00001"
+
+
+def test_scan_step_rejects_barcode_from_another_book():
+    context = RobotContext()
+    context.set("book_detail", {"selectedBookItem": {"barcode": "B00001"}})
+
+    result = ScanStep({
+        "type": "SCAN",
+        "mock_value": "B00002",
+        "expected_value": "${book_detail.selectedBookItem.barcode}",
+    }).execute(context)
+
+    assert result["status"] == "error"
+    assert "does not match" in result["message"]
+    assert context.get("scanned_code") is None
+
+
+def test_scan_step_keeps_timeout_as_failure_for_selected_book():
+    context = RobotContext()
+    context.set("book_detail", {"selectedBookItem": {"barcode": "B00001"}})
+
+    result = ScanStep({
+        "type": "SCAN",
+        "device": "camera",
+        "timeout_sec": 0.01,
+        "expected_value": "${book_detail.selectedBookItem.barcode}",
+    }).execute(context)
+
+    assert result["status"] == "timeout"
+    assert context.get("scanned_code") is None
+
+
 def test_sim_search_uses_the_separate_fixture_endpoint(monkeypatch):
     requested_urls = []
 
