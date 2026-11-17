@@ -20,6 +20,11 @@
       "enabled": true,
       "driver": "ros"
     },
+    "inventory_scan": {
+      "spacing_m": 0.2,
+      "speed_mps": 0.06,
+      "segment_timeout_sec": 20
+    },
     "scanner": {
       "enabled": true,
       "device": "imx500-tcp://127.0.0.1:9011",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import math
 import os
 import shutil
@@ -46,7 +47,7 @@ class WorkflowEngine:
         self.steps: List[BaseStep] = []
         self.lock = threading.RLock()
         self.executions: Dict[str, Dict[str, Any]] = {}
-        self._active_navigation: Optional[NavigationController] = None
+        self._active_navigation: Optional[MoveStep] = None
         self._queued_auto_charge: Optional[Dict[str, Any]] = None
 
     def load_default_workflow(self) -> None:
@@ -97,13 +98,13 @@ class WorkflowEngine:
         step = self.create_step(step_def)
         if isinstance(step, MoveStep):
             with self.lock:
-                self._active_navigation = step.navigation
+                self._active_navigation = step
         try:
             result = step.execute(self.context)
         finally:
             if isinstance(step, MoveStep):
                 with self.lock:
-                    if self._active_navigation is step.navigation:
+                    if self._active_navigation is step:
                         self._active_navigation = None
         if str(step_def.get("type", "")).upper() == "SCAN" and str(configuration.get("sensor", "")).lower() == "patrol_observation":
             self.context.set(str(configuration.get("context_key", "patrol_observation")), None)
@@ -196,6 +197,15 @@ class WorkflowEngine:
         task_id: Any = None,
         execution_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        try:
+            step_defs = self._expand_inventory_workflow(step_defs)
+        except (TypeError, ValueError) as exc:
+            return {"status": "error", "task_id": task_id, "requested_count": len(step_defs),
+                    "completed_count": 0, "failed_step": None, "error": str(exc), "results": []}
+        validation_error = self._validate_steps(step_defs)
+        if validation_error:
+            return {"status": "error", "task_id": task_id, "requested_count": len(step_defs),
+                    "completed_count": 0, "failed_step": None, "error": validation_error, "results": []}
         results = []
         failed_step = None
         failure_message = None
@@ -208,6 +218,7 @@ class WorkflowEngine:
         endpoint_targets = self.context.get("target_endpoints")
         route_factor = len(endpoint_targets) + 2 if isinstance(endpoint_targets, list) else 4
         maximum_steps = max(len(step_defs) * min(max(route_factor, 4), 502), 1)
+        budgeted_shelves = set()
 
         while 0 <= index < len(step_defs) and visited < maximum_steps:
             if execution_id is not None and (
@@ -238,6 +249,12 @@ class WorkflowEngine:
             results.append(step_result)
             visited += 1
             succeeded = self._step_succeeded(step_result, step_def)
+            if succeeded and step_def.get("name") == "MOVE_TO_INVENTORY_SHELF" and self.context.get("inventory_scan_segments"):
+                shelf = self.context.get("current_shelf") or {}
+                shelf_id = str(shelf.get("shelf_id", ""))
+                if shelf_id and shelf_id not in budgeted_shelves:
+                    budgeted_shelves.add(shelf_id)
+                    maximum_steps += 3 * int(self.context.get("inventory_scan_segments")) + 15
             if execution_id is not None:
                 with self.lock:
                     execution = self.executions.get(execution_id)
@@ -261,8 +278,8 @@ class WorkflowEngine:
 
             if str(step_result.get("step_type", "")).upper() == "END":
                 if step_result.get("result", {}).get("workflow_status") != "SUCCEEDED":
-                    failed_step = step_result.get("step")
-                    failure_message = step_result.get("result", {}).get("message") or "Workflow ended with a failure status."
+                    failed_step = failed_step or step_result.get("step")
+                    failure_message = failure_message or step_result.get("result", {}).get("message") or "Workflow ended with a failure status."
                 break
 
             next_id = self._next_step_id(step_def, step_result, succeeded)
@@ -303,6 +320,41 @@ class WorkflowEngine:
             "error": "LOW_BATTERY: mission interrupted at a safe step boundary." if low_battery_preempted else failure_message,
             "results": results,
         }
+
+    @staticmethod
+    def _expand_inventory_workflow(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Expand the backend's inventory scan into actual robot-side steps."""
+        expanded = copy.deepcopy(steps)
+        scan = next((s for s in expanded if isinstance(s, dict) and
+                     s.get("name") == "SCAN_QR_ON_BOTH_SHELF_LEVELS" and s.get("type") == "SCAN"), None)
+        move = next((s for s in expanded if isinstance(s, dict) and
+                     s.get("name") == "MOVE_TO_INVENTORY_SHELF" and s.get("type") == "MOVE"), None)
+        if scan is None or move is None or not isinstance(scan.get("params"), dict):
+            return expanded
+        if (move.get("transitions") or {}).get("on_success") != scan.get("id"):
+            raise ValueError("Inventory MOVE must transition to the inventory SCAN.")
+        transitions = scan.get("transitions") or {}
+        verify_id, error_id = transitions.get("on_success"), transitions.get("on_error")
+        if not verify_id or not error_id:
+            raise ValueError("Inventory SCAN must specify success and error transitions.")
+        existing = {str(s.get("id")) for s in expanded}
+        prefix = "__inventory_scan"
+        while any(f"{prefix}_{suffix}" in existing for suffix in ("move", "scan", "evaluate")):
+            prefix += "_"
+        move_id, scan_id, evaluate_id = (f"{prefix}_{suffix}" for suffix in ("move", "scan", "evaluate"))
+        scan["params"]["_inventory_shelf_scan"] = True
+        scan["transitions"]["on_success"] = move_id
+        repeated_scan = copy.deepcopy(scan)
+        repeated_scan.update(id=scan_id, name="SCAN_INVENTORY_POSITION")
+        repeated_scan["transitions"]["on_success"] = evaluate_id
+        lateral = {"id": move_id, "type": "MOVE", "name": "MOVE_ALONG_INVENTORY_SHELF",
+                   "params": {"movement_mode": "SHELF_SCAN"}, "output_mapping": {},
+                   "transitions": {"on_success": scan_id, "on_error": error_id, "on_timeout": error_id}, "policy": {}}
+        evaluate = {"id": evaluate_id, "type": "EVALUATE", "name": "CHECK_INVENTORY_SHELF_END",
+                    "params": {"left": "${inventory_scan_complete}", "operator": "EQUAL", "right": True},
+                    "output_mapping": {}, "transitions": {"on_true": verify_id, "on_false": move_id, "on_error": error_id}, "policy": {}}
+        expanded.extend([lateral, repeated_scan, evaluate])
+        return expanded
 
     def _next_step_id(
         self,
@@ -921,6 +973,14 @@ class WorkflowEngine:
             enriched = dict(step_def)
         step_type = str(enriched.get("type", "WAIT")).upper()
         hardware = self.settings.get("hardware", {})
+
+        if (str(enriched.get("name", "")).upper() == "MOVE_TO_INVENTORY_SHELF"
+                or enriched.get("_inventory_shelf_scan")
+                or enriched.get("movement_mode") == "SHELF_SCAN"):
+            enriched["_inventory_shelf_scan"] = True
+            enriched["_inventory_scan_settings"] = hardware.get("inventory_scan", {})
+            enriched["backend_base_url"] = (self.settings.get("backend", {}).get("base_url")
+                                             or self.settings.get("runtime", {}).get("backend_url"))
 
         if step_type == "SCAN":
             scanner = hardware.get("scanner", {})

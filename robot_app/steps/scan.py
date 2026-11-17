@@ -30,8 +30,35 @@ class ScanStep(BaseStep):
             "quiet_period_sec": self.config.get("quiet_period_sec", 0.75),
         }
         self.scanner = BarcodeScanner(scanner_settings)
-
     def execute(self, context: RobotContext) -> Any:
+        if not self.config.get("_inventory_shelf_scan"):
+            return self._scan_once(context)
+        if context.get("workflow_cancelled") or context.get("low_battery_preempt_requested"):
+            return {"status": "error", "type": "SCAN", "scan_status": "FAILED", "message": "Inventory scan cancelled."}
+        result = self._scan_once(context)
+        if result.get("status") != "scanned":
+            return result
+        previous = context.get("inventory_scanned_items")
+        if not isinstance(previous, list):
+            return {"status": "error", "type": "SCAN", "scan_status": "FAILED", "message": "Inventory scan state is missing."}
+        items = list(previous)
+        seen = {(item["qr_code"].casefold(), item["level_number"]) for item in items}
+        for item in result.get("scanned_items", []):
+            key = (item["qr_code"].casefold(), item["level_number"])
+            if key not in seen:
+                seen.add(key)
+                items.append(item)
+        context.set("inventory_scanned_items", items)
+        if context.get("inventory_scan_complete") and not items:
+            return {"status": "error", "type": "SCAN", "scan_status": "FAILED",
+                    "message": "No books were read across the shelf; inventory cannot be verified safely."}
+        result["scanned_items"] = items
+        result["scanned_count"] = len(items)
+        result["scan_status"] = "COMPLETED" if items else "NO_DATA"
+        context.set("last_scan", result)
+        return result
+
+    def _scan_once(self, context: RobotContext) -> Any:
         started_at = time.monotonic()
         default_queue = "patrol_observation_queue" if self.sensor == "patrol_observation" else "scan_queue"
         queue_key = str(self.config.get("queue_key", default_queue))

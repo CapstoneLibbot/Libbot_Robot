@@ -135,6 +135,7 @@ class RobotRuntimeGateway:
         self._localization_condition = threading.Condition(self._lock)
         self._amcl_samples: deque[Dict[str, Any]] = deque(maxlen=self.AMCL_MIN_STABLE_SAMPLES)
         self._last_scan_monotonic: Optional[float] = None
+        self._last_odom_monotonic: Optional[float] = None
         self._last_scan_ros_stamp_ns: Optional[int] = None
         self._localization_attempt_start_stamp_ns = 0
         self._localization_attempt_id = 0
@@ -2340,6 +2341,7 @@ class RobotRuntimeGateway:
     def _on_odom(self, message: Any) -> None:
         twist = message.twist.twist
         with self._lock:
+            self._last_odom_monotonic = time.monotonic()
             self.twist = {
                 "linearX": float(twist.linear.x),
                 "linearY": float(twist.linear.y),
