@@ -331,6 +331,15 @@ class WorkflowEngine:
                      s.get("name") == "MOVE_TO_INVENTORY_SHELF" and s.get("type") == "MOVE"), None)
         if scan is None or move is None or not isinstance(scan.get("params"), dict):
             return expanded
+        move_params = move.get("params") if isinstance(move.get("params"), dict) else move
+        scan_params = scan.get("params") if isinstance(scan.get("params"), dict) else scan
+        shelf_scan_enabled = (
+            bool(move_params.get("_inventory_shelf_scan"))
+            or move_params.get("movement_mode") == "SHELF_SCAN"
+            or bool(scan_params.get("_inventory_shelf_scan"))
+        )
+        if not shelf_scan_enabled:
+            return expanded
         if (move.get("transitions") or {}).get("on_success") != scan.get("id"):
             raise ValueError("Inventory MOVE must transition to the inventory SCAN.")
         transitions = scan.get("transitions") or {}
@@ -974,8 +983,7 @@ class WorkflowEngine:
         step_type = str(enriched.get("type", "WAIT")).upper()
         hardware = self.settings.get("hardware", {})
 
-        if (str(enriched.get("name", "")).upper() == "MOVE_TO_INVENTORY_SHELF"
-                or enriched.get("_inventory_shelf_scan")
+        if (enriched.get("_inventory_shelf_scan")
                 or enriched.get("movement_mode") == "SHELF_SCAN"):
             enriched["_inventory_shelf_scan"] = True
             enriched["_inventory_scan_settings"] = hardware.get("inventory_scan", {})
