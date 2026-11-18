@@ -48,12 +48,19 @@ class MoveStep(BaseStep):
             start, end = context.get("inventory_scan_start"), context.get("inventory_scan_end")
             segments = int(context.get("inventory_scan_segments") or 0)
             index = int(context.get("inventory_scan_index") or 0)
+            spacing = float(context.get("inventory_scan_spacing_m") or 0)
             if not isinstance(start, dict) or not isinstance(end, dict) or not 0 <= index < segments <= 1000:
                 raise ValueError("Inventory scan segment state is invalid.")
-            fraction = (index + 1) / segments
+            length = math.hypot(end["x"] - start["x"], end["y"] - start["y"])
+            if not math.isfinite(spacing) or spacing <= 0 or not math.isfinite(length) or length <= 0:
+                raise ValueError("Inventory scan spacing or endpoint distance is invalid.")
+            fraction = 1.0 if index + 1 == segments else min((index + 1) * spacing / length, 1.0)
             target = {"x": start["x"] + (end["x"] - start["x"]) * fraction,
                       "y": start["y"] + (end["y"] - start["y"]) * fraction,
                       "theta": start["theta"]}
+            initial_pose = self.runtime_gateway._lookup_map_pose()
+            if not initial_pose:
+                raise RuntimeError("Robot pose unavailable before inventory movement.")
             self.shelf_motion.move_to(target, context)
             self.shelf_motion.wait_stopped(context)
             actual_pose = self.runtime_gateway._lookup_map_pose()
@@ -63,8 +70,10 @@ class MoveStep(BaseStep):
             context.set("inventory_scan_complete", index + 1 == segments)
             context.set("current_pose", actual_pose)
             context.set("move_status", "COMPLETED")
+            displacement = math.hypot(actual_pose["x"] - initial_pose["x"], actual_pose["y"] - initial_pose["y"])
             return {"status": "ok", "type": "MOVE", "move_status": "COMPLETED", "target": target,
-                    "final_pose": actual_pose, "segment_index": index + 1, "segment_count": segments}
+                    "final_pose": actual_pose, "start_pose": initial_pose, "actual_displacement_m": displacement,
+                    "segment_index": index + 1, "segment_count": segments}
         except (ValueError, TypeError, KeyError, RuntimeError, OSError, ImportError) as exc:
             self.stop()
             return self._error_payload(
@@ -264,12 +273,14 @@ class MoveStep(BaseStep):
                 spacing = float(self.config.get("_inventory_scan_settings", {}).get("spacing_m", 0.20))
                 if not math.isfinite(spacing) or not 0.02 <= spacing <= 0.20:
                     raise ValueError("Inventory scan spacing must be between 0.02 and 0.20 m.")
-                segments = math.ceil(math.hypot(end["x"] - start["x"], end["y"] - start["y"]) / spacing)
+                distance = math.hypot(end["x"] - start["x"], end["y"] - start["y"])
+                segments = math.ceil(distance / spacing - 1e-9)
                 if not 1 <= segments <= 1000:
                     raise ValueError("Inventory shelf must require between 1 and 1000 scan segments.")
                 context.set("inventory_scan_start", start)
                 context.set("inventory_scan_end", end)
                 context.set("inventory_scan_segments", segments)
+                context.set("inventory_scan_spacing_m", spacing)
                 context.set("inventory_scan_index", 0)
                 context.set("inventory_scan_complete", False)
                 context.set("inventory_scanned_items", [])

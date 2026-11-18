@@ -144,6 +144,17 @@ def test_expanded_workflow_moves_scans_and_evaluates(monkeypatch, distance, coun
     assert context.get("inventory_scan_complete") is True
 
 
+@pytest.mark.parametrize("direction", [-1, 1])
+def test_scan_targets_use_fixed_spacing_and_finish_at_endpoint(monkeypatch, direction):
+    scan = [{"qr_code": "A", "level_number": 1}]
+    result, _, targets, _ = run_inventory(monkeypatch, direction * 0.505, [scan] * 4)
+    assert result["status"] == "ok", result
+    assert [target["y"] for target in targets] == pytest.approx(
+        [0, direction * 0.2, direction * 0.4, direction * 0.505])
+    segments = [item["result"] for item in result["results"] if item["step"] == "MOVE_ALONG_INVENTORY_SHELF"]
+    assert [item["actual_displacement_m"] for item in segments] == pytest.approx([0.2, 0.2, 0.105])
+
+
 def test_empty_shelf_does_not_reach_verify(monkeypatch):
     result, _, _, verified = run_inventory(monkeypatch, 0.2, [[], []])
     assert result["status"] == "error"
