@@ -56,10 +56,10 @@ class ShelfMotionController:
         from lifecycle_msgs.srv import GetState
         from rclpy.time import Time
 
-        speed = float(self.settings.get("speed_mps", 0.3))
+        speed = float(self.settings.get("speed_mps", 0.5))
         min_speed = float(self.settings.get("min_speed_mps", min(0.02, speed)))
         min_angular_speed = float(self.settings.get("min_angular_speed_radps", 0.08))
-        if (not math.isfinite(speed) or not 0 < speed <= 0.1
+        if (not math.isfinite(speed) or not 0 < speed <= 0.5
                 or not math.isfinite(min_speed) or not 0 <= min_speed <= speed
                 or not math.isfinite(min_angular_speed) or not 0 <= min_angular_speed <= 0.15):
             raise ValueError("Invalid shelf scan speed or minimum correction speed.")
