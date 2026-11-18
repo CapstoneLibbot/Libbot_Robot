@@ -56,7 +56,7 @@ class ShelfMotionController:
         from lifecycle_msgs.srv import GetState
         from rclpy.time import Time
 
-        speed = float(self.settings.get("speed_mps", 0.06))
+        speed = float(self.settings.get("speed_mps", 0.3))
         min_speed = float(self.settings.get("min_speed_mps", min(0.02, speed)))
         min_angular_speed = float(self.settings.get("min_angular_speed_radps", 0.08))
         if (not math.isfinite(speed) or not 0 < speed <= 0.1
