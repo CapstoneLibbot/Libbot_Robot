@@ -25,12 +25,16 @@ class Gateway:
         return None
 
 
-@pytest.mark.parametrize("error", [-0.02, 0.02])
+@pytest.mark.parametrize("error", [-0.045, 0.045])
 def test_shelf_small_lateral_error_has_bounded_motion(error):
-    velocity = _bounded_correction(error, 0.015, 0.7, 0.02, 0.06)
-    assert abs(velocity) == pytest.approx(0.02)
+    velocity = _bounded_correction(error, 0.04, 0.7, 0.04, 0.5)
+    assert abs(velocity) == pytest.approx(0.04)
     assert velocity * error > 0
-    assert _bounded_correction(error / 2, 0.015, 0.7, 0.02, 0.06) == 0
+    assert _bounded_correction(error / 2, 0.04, 0.7, 0.04, 0.5) == 0
+
+
+def test_previous_alignment_error_is_within_new_lateral_tolerance():
+    assert _bounded_correction(-0.034, 0.04, 0.7, 0.04, 0.5) == 0
 
 
 def test_shelf_heading_correction_stops_in_tolerance_and_respects_limit():

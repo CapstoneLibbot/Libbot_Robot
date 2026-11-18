@@ -57,9 +57,9 @@ class ShelfMotionController:
         from rclpy.time import Time
 
         speed = float(self.settings.get("speed_mps", 0.5))
-        min_speed = float(self.settings.get("min_speed_mps", min(0.02, speed)))
+        min_speed = float(self.settings.get("min_speed_mps", min(0.04, speed)))
         min_angular_speed = float(self.settings.get("min_angular_speed_radps", 0.08))
-        lateral_tolerance = float(self.settings.get("lateral_tolerance_m", 0.02))
+        lateral_tolerance = float(self.settings.get("lateral_tolerance_m", 0.04))
         heading_tolerance = float(self.settings.get("heading_tolerance_rad", 0.15))
         if (not math.isfinite(speed) or not 0 < speed <= 0.5
                 or not math.isfinite(min_speed) or not 0 <= min_speed <= speed
