@@ -59,9 +59,11 @@ class ShelfMotionController:
         speed = float(self.settings.get("speed_mps", 0.5))
         min_speed = float(self.settings.get("min_speed_mps", min(0.02, speed)))
         min_angular_speed = float(self.settings.get("min_angular_speed_radps", 0.08))
+        heading_tolerance = float(self.settings.get("heading_tolerance_rad", 0.10))
         if (not math.isfinite(speed) or not 0 < speed <= 0.5
                 or not math.isfinite(min_speed) or not 0 <= min_speed <= speed
-                or not math.isfinite(min_angular_speed) or not 0 <= min_angular_speed <= 0.15):
+                or not math.isfinite(min_angular_speed) or not 0 <= min_angular_speed <= 0.15
+                or not math.isfinite(heading_tolerance) or not 0 < heading_tolerance <= 0.45):
             raise ValueError("Invalid shelf scan speed or minimum correction speed.")
         deadline = time.monotonic() + float(self.settings.get("segment_timeout_sec", 20.0))
         node = rclpy.create_node(f"libot_shelf_motion_{uuid.uuid4().hex[:8]}")
@@ -122,12 +124,14 @@ class ShelfMotionController:
                 last_errors = (forward, lateral, heading_error)
                 if abs(forward) > 0.08:
                     raise RuntimeError("Robot deviated from the configured shelf scan line.")
-                if abs(lateral) <= 0.015 and abs(heading_error) <= 0.04:
+                if abs(lateral) <= 0.015 and abs(heading_error) <= heading_tolerance:
                     return
                 msg = Twist()
                 if abs(heading_error) <= 0.12:
                     msg.linear.y = _bounded_correction(lateral, 0.015, 0.7, min_speed, speed)
-                msg.angular.z = _bounded_correction(heading_error, 0.04, 0.8, min_angular_speed, 0.15)
+                msg.angular.z = _bounded_correction(
+                    heading_error, heading_tolerance, 0.8, min_angular_speed, 0.15
+                )
                 publisher.publish(msg)
             details = ""
             if last_errors is not None:
