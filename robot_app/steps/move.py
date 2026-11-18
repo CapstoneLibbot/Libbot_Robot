@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import time
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 from core.context import RobotContext
@@ -41,6 +42,8 @@ class MoveStep(BaseStep):
             self.shelf_motion.stop()
 
     def _move_inventory_segment(self, context: RobotContext) -> Dict[str, Any]:
+        started_at = time.monotonic()
+        target = None
         try:
             start, end = context.get("inventory_scan_start"), context.get("inventory_scan_end")
             segments = int(context.get("inventory_scan_segments") or 0)
@@ -64,7 +67,11 @@ class MoveStep(BaseStep):
                     "final_pose": actual_pose, "segment_index": index + 1, "segment_count": segments}
         except (ValueError, TypeError, KeyError, RuntimeError, OSError, ImportError) as exc:
             self.stop()
-            return self._error_payload(context, str(exc))
+            return self._error_payload(
+                context, str(exc), error_code="SHELF_MOTION_FAILED" if target else "INVALID_INPUT",
+                target=target, nav2_result_code=None,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+            )
 
     def _normalize_enum(self, value: Any, default: str) -> str:
         if value is None:
@@ -216,7 +223,9 @@ class MoveStep(BaseStep):
             )
         return None
 
-    def _error_payload(self, context: RobotContext, message: str) -> Dict[str, Any]:
+    def _error_payload(self, context: RobotContext, message: str, *, error_code: str = "INVALID_INPUT",
+                       target: Any = None, nav2_result_code: Any = "INVALID_INPUT",
+                       duration_ms: int = 0) -> Dict[str, Any]:
         current_pose = context.get("current_pose", {"x": 0.0, "y": 0.0, "theta": 0.0})
         context.set("move_status", "FAILED")
         return {
@@ -224,10 +233,11 @@ class MoveStep(BaseStep):
             "type": "MOVE",
             "move_status": "FAILED",
             "message": message,
-            "target": None,
+            "target": target,
             "final_pose": None,
-            "nav2_result_code": "INVALID_INPUT",
-            "duration_ms": 0,
+            "nav2_result_code": nav2_result_code,
+            "error_code": error_code,
+            "duration_ms": duration_ms,
             "obstacle_info": None,
             "speed_mode": self.speed_mode,
             "obstacle_policy": self.obstacle_policy,
@@ -239,6 +249,7 @@ class MoveStep(BaseStep):
         }
 
     def execute(self, context: RobotContext) -> Any:
+        started_at = time.monotonic()
         if self.config.get("movement_mode") == "SHELF_SCAN":
             return self._move_inventory_segment(context)
         current_pose = context.get("current_pose", {"x": 0.0, "y": 0.0, "theta": 0.0})
@@ -319,7 +330,17 @@ class MoveStep(BaseStep):
                 self.shelf_motion.wait_stopped(context)
             except (ValueError, TypeError, KeyError, RuntimeError, OSError, ImportError) as exc:
                 self.stop()
-                return self._error_payload(context, str(exc))
+                try:
+                    current = self.runtime_gateway._lookup_map_pose()
+                    if current:
+                        context.set("current_pose", current)
+                except Exception:
+                    pass
+                return self._error_payload(
+                    context, str(exc), error_code="SHELF_ALIGNMENT_FAILED",
+                    target=requested_target, nav2_result_code=nav_result.get("nav2_result_code"),
+                    duration_ms=int((time.monotonic() - started_at) * 1000),
+                )
         final_pose = nav_result.get("final_pose")
         if final_pose is None and self.runtime_gateway is not None:
             final_pose = dict(getattr(self.runtime_gateway, "pose", {}) or {}) or None

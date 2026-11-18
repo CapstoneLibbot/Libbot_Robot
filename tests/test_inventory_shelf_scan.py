@@ -4,6 +4,8 @@ from core.context import RobotContext
 from core.workflow_engine import WorkflowEngine
 from steps.inventory_navigation import resolve_shelf_endpoints
 from steps.scan import ScanStep
+from steps.move import MoveStep
+from hardware.shelf_motion import _bounded_correction
 
 
 class Gateway:
@@ -21,6 +23,40 @@ class Gateway:
 
     def navigation_zone_blocking_action(self, *args):
         return None
+
+
+@pytest.mark.parametrize("error", [-0.02, 0.02])
+def test_shelf_small_lateral_error_has_bounded_motion(error):
+    velocity = _bounded_correction(error, 0.015, 0.7, 0.02, 0.06)
+    assert abs(velocity) == pytest.approx(0.02)
+    assert velocity * error > 0
+    assert _bounded_correction(error / 2, 0.015, 0.7, 0.02, 0.06) == 0
+
+
+def test_shelf_heading_correction_stops_in_tolerance_and_respects_limit():
+    assert _bounded_correction(0.039, 0.04, 0.8, 0.08, 0.15) == 0
+    assert _bounded_correction(-0.05, 0.04, 0.8, 0.08, 0.15) == pytest.approx(-0.08)
+    assert _bounded_correction(0.4, 0.04, 0.8, 0.08, 0.15) == pytest.approx(0.15)
+
+
+def test_inventory_alignment_failure_reports_nav_result_and_actual_goal(monkeypatch):
+    context = RobotContext()
+    gateway = Gateway()
+    start = {"endpoint_id": "a", "x": 0.0, "y": 0.0, "theta": 0.0, "map_id": "map-1"}
+    end = {"endpoint_id": "b", "x": 0.0, "y": 0.2, "theta": 0.0, "map_id": "map-1"}
+    context.set("current_shelf", {"shelf_id": "shelf-1", "start_endpoint": start, "end_endpoint": end})
+    monkeypatch.setattr("steps.move.NavigationController.navigate", lambda self, goal: {
+        "move_status": "COMPLETED", "nav2_result_code": "SUCCEEDED"})
+    def fail_alignment(self, target, context):
+        raise RuntimeError("Shelf scan movement timed out")
+    monkeypatch.setattr("hardware.shelf_motion.ShelfMotionController.move_to", fail_alignment)
+    step = MoveStep({"_inventory_shelf_scan": True, "_runtime_gateway": gateway})
+    result = step.execute(context)
+    assert result["move_status"] == "FAILED"
+    assert result["error_code"] == "SHELF_ALIGNMENT_FAILED"
+    assert result["nav2_result_code"] == "SUCCEEDED"
+    assert result["target"] == start
+    assert result["current_pose"] == gateway.pose
 
 
 def test_selects_nearest_endpoint_from_inventory_scope(monkeypatch):
@@ -55,7 +91,7 @@ def inventory_workflow():
         return {"id": id, "type": kind, "name": name, "params": params,
                 "output_mapping": {}, "transitions": transitions, "policy": {}}
     return [
-        step("I40", "MOVE", "MOVE_TO_INVENTORY_SHELF", {}, {"on_success": "I50", "on_error": "ERR"}),
+        step("I40", "MOVE", "MOVE_TO_INVENTORY_SHELF", {"_inventory_shelf_scan": True}, {"on_success": "I50", "on_error": "ERR"}),
         {**step("I50", "SCAN", "SCAN_QR_ON_BOTH_SHELF_LEVELS", {"scan_type": "QR", "target_type": "BOOK", "continuous": True},
                 {"on_success": "I60", "on_error": "ERR"}),
          "output_mapping": {"scanned_items": "scanned_items", "scan_status": "scan_status"}},

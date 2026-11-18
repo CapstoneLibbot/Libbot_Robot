@@ -7,6 +7,13 @@ import uuid
 from typing import Any, Dict
 
 
+def _bounded_correction(error: float, tolerance: float, gain: float, minimum: float, maximum: float) -> float:
+    """Apply a small bounded correction only while outside the stop tolerance."""
+    if abs(error) <= tolerance:
+        return 0.0
+    return math.copysign(min(maximum, max(minimum, abs(error) * gain)), error)
+
+
 class ShelfMotionController:
     """Move between scan positions through Nav2's velocity safety pipeline."""
 
@@ -49,14 +56,18 @@ class ShelfMotionController:
         from lifecycle_msgs.srv import GetState
         from rclpy.time import Time
 
+        speed = float(self.settings.get("speed_mps", 0.06))
+        min_speed = float(self.settings.get("min_speed_mps", min(0.02, speed)))
+        min_angular_speed = float(self.settings.get("min_angular_speed_radps", 0.08))
+        if (not math.isfinite(speed) or not 0 < speed <= 0.1
+                or not math.isfinite(min_speed) or not 0 <= min_speed <= speed
+                or not math.isfinite(min_angular_speed) or not 0 <= min_angular_speed <= 0.15):
+            raise ValueError("Invalid shelf scan speed or minimum correction speed.")
+        deadline = time.monotonic() + float(self.settings.get("segment_timeout_sec", 20.0))
         node = rclpy.create_node(f"libot_shelf_motion_{uuid.uuid4().hex[:8]}")
         publisher = node.create_publisher(Twist, "/cmd_vel_nav", 10)
         client = node.create_client(GetState, "/collision_monitor/get_state")
-        deadline = time.monotonic() + float(self.settings.get("segment_timeout_sec", 20.0))
-        speed = float(self.settings.get("speed_mps", 0.06))
-        if not math.isfinite(speed) or not 0 < speed <= 0.1:
-            node.destroy_node()
-            raise ValueError("Shelf scan speed must be between 0 and 0.1 m/s.")
+        last_errors = None
         try:
             if not client.wait_for_service(timeout_sec=2.0):
                 raise RuntimeError("Collision monitor is unavailable.")
@@ -108,16 +119,21 @@ class ShelfMotionController:
                         raise RuntimeError("Shelf scan route enters a restricted navigation zone.")
                 forward = math.cos(yaw) * dx + math.sin(yaw) * dy
                 lateral = -math.sin(yaw) * dx + math.cos(yaw) * dy
+                last_errors = (forward, lateral, heading_error)
                 if abs(forward) > 0.08:
                     raise RuntimeError("Robot deviated from the configured shelf scan line.")
                 if abs(lateral) <= 0.015 and abs(heading_error) <= 0.04:
                     return
                 msg = Twist()
                 if abs(heading_error) <= 0.12:
-                    msg.linear.y = max(-speed, min(speed, lateral * 0.7))
-                msg.angular.z = max(-0.15, min(0.15, heading_error * 0.8))
+                    msg.linear.y = _bounded_correction(lateral, 0.015, 0.7, min_speed, speed)
+                msg.angular.z = _bounded_correction(heading_error, 0.04, 0.8, min_angular_speed, 0.15)
                 publisher.publish(msg)
-            raise RuntimeError("Shelf scan movement timed out or was blocked.")
+            details = ""
+            if last_errors is not None:
+                details = (f" Last errors: forward={last_errors[0]:.3f} m, "
+                           f"lateral={last_errors[1]:.3f} m, heading={last_errors[2]:.3f} rad.")
+            raise RuntimeError("Shelf scan movement timed out; check motion and safety pipeline." + details)
         finally:
             for _ in range(3):
                 publisher.publish(Twist())

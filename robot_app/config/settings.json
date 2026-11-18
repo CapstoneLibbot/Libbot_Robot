@@ -23,6 +23,8 @@
     "inventory_scan": {
       "spacing_m": 0.2,
       "speed_mps": 0.06,
+      "min_speed_mps": 0.02,
+      "min_angular_speed_radps": 0.08,
       "segment_timeout_sec": 20
     },
     "scanner": {
