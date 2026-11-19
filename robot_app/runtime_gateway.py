@@ -1273,6 +1273,7 @@ class RobotRuntimeGateway:
                     return
                 self.navigation_mode_state = "ACTIVATING"
                 lifecycle_started = self._navigation_lifecycle_started
+                lifecycle_paused = self._navigation_lifecycle_paused
 
             command = "RESUME" if lifecycle_started and lifecycle_paused else None
             if not lifecycle_started:

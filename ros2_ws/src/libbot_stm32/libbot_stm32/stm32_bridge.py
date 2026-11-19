@@ -12,6 +12,7 @@ from std_msgs.msg import String
 from tf2_ros import TransformBroadcaster
 
 from libbot_stm32.protocol import parse_imu_line, parse_range_line
+from libbot_stm32.wheel_diagnostics import WheelResponseMonitor
 
 
 class STM32Bridge(Node):
@@ -90,6 +91,8 @@ class STM32Bridge(Node):
         self.last_velocity_ack_logged = 0.0
         self.last_imu_calibration = None
         self.last_blocked_mask = None
+        self.last_velocity_command = None
+        self.wheel_response_monitor = WheelResponseMonitor()
 
         self.serial_timer = self.create_timer(0.005, self.serial_callback)
         self.odom_timer = self.create_timer(0.02, self.publish_odom)
@@ -148,11 +151,20 @@ class STM32Bridge(Node):
             return
         self.last_cmd_monotonic = time.monotonic()
         self.command_is_active = any(abs(v) > 1e-6 for v in (vx, vy, wz))
+        # Match UART truncation and the per-axis limits applied before transmission.
+        self.last_velocity_command = tuple(
+            int(max(-limit, min(limit, value)) * 1000.0) / 1000.0
+            for value, limit in zip((vx, vy, wz), (self.STM32_MAX_VX_MPS,
+                                                    self.STM32_MAX_VY_MPS,
+                                                    self.STM32_MAX_WZ_RAD_S))
+        )
         self.send_velocity(vx, vy, wz)
 
     def command_watchdog(self):
         if self.command_is_active and (time.monotonic() - self.last_cmd_monotonic) > self.CMD_TIMEOUT_SEC:
             self.send_velocity(0.0, 0.0, 0.0)
+            self.last_velocity_command = None
+            self.wheel_response_monitor.reset()
             self.command_is_active = False
             self.get_logger().warning(
                 f'No {self.cmd_vel_topic} recently; sent zero velocity to STM32'
@@ -390,6 +402,7 @@ class STM32Bridge(Node):
             / scale * self.ENCODER_JUMP_MARGIN,
         )
         if any(abs(delta) > max_delta for delta in deltas):
+            self.wheel_response_monitor.reset()
             self.odom_vx = 0.0
             self.odom_vy = 0.0
             self.odom_wz = 0.0
@@ -416,6 +429,18 @@ class STM32Bridge(Node):
         )
 
         s1, s2, s3, s4 = (d1 * scale, d2 * scale, d3 * scale, d4 * scale)
+
+        command = self.last_velocity_command if now - self.last_cmd_monotonic <= self.CMD_TIMEOUT_SEC else None
+        warning = self.wheel_response_monitor.update(
+            now, command, self.last_blocked_mask, (s1, s2, s3, s4))
+        if warning:
+            targets = ','.join(f'{value:.3f}' for value in warning['targets'])
+            distances = ','.join(f'{value:.3f}' for value in warning['distance'])
+            message = (f"WHEEL_RESPONSE_SUSPECT moving=M{warning['moving'][0]} "
+                       f"targets_mps=[{targets}] encoder_distance_m=[{distances}] "
+                       f"window_sec={warning['elapsed']:.2f}; check motors and encoders")
+            self.get_logger().warning(message)
+            self.publish_status(message)
 
         # Mecanum X-roller configuration, wheel order FL, FR, RL, RR.
         # +x forward, +y left, +yaw counterclockwise.
