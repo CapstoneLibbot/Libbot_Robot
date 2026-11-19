@@ -5,7 +5,7 @@ from core.workflow_engine import WorkflowEngine
 from steps.inventory_navigation import resolve_shelf_endpoints
 from steps.scan import ScanStep
 from steps.move import MoveStep
-from hardware.shelf_motion import _bounded_correction
+from hardware.shelf_motion import _bounded_correction, _shelf_velocity
 
 
 class Gateway:
@@ -41,6 +41,12 @@ def test_shelf_heading_correction_stops_in_tolerance_and_respects_limit():
     assert _bounded_correction(0.039, 0.04, 0.8, 0.08, 0.15) == 0
     assert _bounded_correction(-0.05, 0.04, 0.8, 0.08, 0.15) == pytest.approx(-0.08)
     assert _bounded_correction(0.4, 0.04, 0.8, 0.08, 0.15) == pytest.approx(0.15)
+
+
+def test_shelf_motion_is_faster_and_corrects_heading_separately():
+    assert _shelf_velocity(0.15, 0.0, 0.04, 0.15, 0.04, 0.5, 0.08) == pytest.approx((0.18, 0))
+    assert _shelf_velocity(0.15, 0.10, 0.04, 0.04, 0.04, 0.5, 0.08) == pytest.approx((0, 0.08))
+    assert _shelf_velocity(0.03, 0.0, 0.04, 0.15, 0.04, 0.5, 0.08) == (0, 0)
 
 
 def test_inventory_alignment_failure_reports_nav_result_and_actual_goal(monkeypatch):

@@ -14,6 +14,15 @@ def _bounded_correction(error: float, tolerance: float, gain: float, minimum: fl
     return math.copysign(min(maximum, max(minimum, abs(error) * gain)), error)
 
 
+def _shelf_velocity(lateral: float, heading: float, lateral_tolerance: float,
+                    heading_tolerance: float, min_speed: float, max_speed: float,
+                    min_angular_speed: float) -> tuple[float, float]:
+    """Correct heading separately from translation to avoid wheel cancellation."""
+    if abs(heading) > heading_tolerance:
+        return 0.0, _bounded_correction(heading, heading_tolerance, 0.8, min_angular_speed, 0.15)
+    return _bounded_correction(lateral, lateral_tolerance, 1.2, min_speed, max_speed), 0.0
+
+
 class ShelfMotionController:
     """Move between scan positions through Nav2's velocity safety pipeline."""
 
@@ -129,10 +138,9 @@ class ShelfMotionController:
                 if abs(lateral) <= lateral_tolerance and abs(heading_error) <= heading_tolerance:
                     return
                 msg = Twist()
-                if abs(heading_error) <= max(0.12, heading_tolerance):
-                    msg.linear.y = _bounded_correction(lateral, lateral_tolerance, 0.7, min_speed, speed)
-                msg.angular.z = _bounded_correction(
-                    heading_error, heading_tolerance, 0.8, min_angular_speed, 0.15
+                msg.linear.y, msg.angular.z = _shelf_velocity(
+                    lateral, heading_error, lateral_tolerance, heading_tolerance,
+                    min_speed, speed, min_angular_speed,
                 )
                 publisher.publish(msg)
             details = ""
