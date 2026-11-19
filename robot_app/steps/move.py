@@ -18,6 +18,7 @@ class MoveStep(BaseStep):
     SPEED_MODES = {"NORMAL", "SLOW_GUIDE", "PATROL"}
     OBSTACLE_POLICIES = {"WAIT_RESUME", "REROUTE", "DETECT_AND_WAIT"}
     OBSTACLE_POLICY_ALIASES = {"WAIT": "WAIT_RESUME"}
+    INVENTORY_TARGET_SEGMENT_M = 0.15
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         super().__init__(config)
@@ -48,13 +49,14 @@ class MoveStep(BaseStep):
             start, end = context.get("inventory_scan_start"), context.get("inventory_scan_end")
             segments = int(context.get("inventory_scan_segments") or 0)
             index = int(context.get("inventory_scan_index") or 0)
-            spacing = float(context.get("inventory_scan_spacing_m") or 0)
             if not isinstance(start, dict) or not isinstance(end, dict) or not 0 <= index < segments <= 1000:
                 raise ValueError("Inventory scan segment state is invalid.")
             length = math.hypot(end["x"] - start["x"], end["y"] - start["y"])
-            if not math.isfinite(spacing) or spacing <= 0 or not math.isfinite(length) or length <= 0:
-                raise ValueError("Inventory scan spacing or endpoint distance is invalid.")
-            fraction = 1.0 if index + 1 == segments else min((index + 1) * spacing / length, 1.0)
+            if not math.isfinite(length) or length <= 0:
+                raise ValueError("Inventory scan endpoint distance is invalid.")
+            fraction = min((index + 1) * self.INVENTORY_TARGET_SEGMENT_M / length, 1.0)
+            if index + 1 == segments:
+                fraction = 1.0
             target = {"x": start["x"] + (end["x"] - start["x"]) * fraction,
                       "y": start["y"] + (end["y"] - start["y"]) * fraction,
                       "theta": start["theta"]}
@@ -270,17 +272,13 @@ class MoveStep(BaseStep):
             try:
                 from steps.inventory_navigation import resolve_shelf_endpoints
                 start, end = resolve_shelf_endpoints(context, self.runtime_gateway)
-                spacing = float(self.config.get("_inventory_scan_settings", {}).get("spacing_m", 0.20))
-                if not math.isfinite(spacing) or not 0.02 <= spacing <= 0.20:
-                    raise ValueError("Inventory scan spacing must be between 0.02 and 0.20 m.")
                 distance = math.hypot(end["x"] - start["x"], end["y"] - start["y"])
-                segments = math.ceil(distance / spacing - 1e-9)
+                segments = math.ceil(distance / self.INVENTORY_TARGET_SEGMENT_M - 1e-9)
                 if not 1 <= segments <= 1000:
                     raise ValueError("Inventory shelf must require between 1 and 1000 scan segments.")
                 context.set("inventory_scan_start", start)
                 context.set("inventory_scan_end", end)
                 context.set("inventory_scan_segments", segments)
-                context.set("inventory_scan_spacing_m", spacing)
                 context.set("inventory_scan_index", 0)
                 context.set("inventory_scan_complete", False)
                 context.set("inventory_scanned_items", [])

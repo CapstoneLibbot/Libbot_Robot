@@ -131,7 +131,7 @@ def run_inventory(monkeypatch, distance, scans, blocked=False):
     return result, engine.context, targets, verified
 
 
-@pytest.mark.parametrize("distance,count", [(0.1, 2), (0.2, 2), (0.45, 4), (5.0, 26)])
+@pytest.mark.parametrize("distance,count", [(0.1, 2), (0.2, 3), (0.45, 4), (5.0, 35)])
 def test_expanded_workflow_moves_scans_and_evaluates(monkeypatch, distance, count):
     scan = [{"qr_code": "A", "level_number": 1}, {"qr_code": "A", "level_number": 2}]
     result, context, targets, verified = run_inventory(monkeypatch, distance, [scan] * count)
@@ -140,23 +140,28 @@ def test_expanded_workflow_moves_scans_and_evaluates(monkeypatch, distance, coun
     assert steps == ["MOVE", "SCAN"] + ["MOVE", "SCAN", "EVALUATE"] * (count - 1) + ["PROCESS_DATA", "END"]
     assert len(verified) == 1 and len(verified[0]) == 2
     assert targets[-1]["y"] == pytest.approx(distance)
-    assert all(target["y"] - previous <= 0.200001 for previous, target in zip([0] + [p["y"] for p in targets], targets))
+    assert all(target["y"] - previous <= 0.150001 for previous, target in zip([0] + [p["y"] for p in targets], targets))
     assert context.get("inventory_scan_complete") is True
 
 
 @pytest.mark.parametrize("direction", [-1, 1])
-def test_scan_targets_use_fixed_spacing_and_finish_at_endpoint(monkeypatch, direction):
+@pytest.mark.parametrize("distance,expected", [
+    (0.35, [0, 0.15, 0.30, 0.35]),
+    (0.40, [0, 0.15, 0.30, 0.40]),
+    (0.505, [0, 0.15, 0.30, 0.45, 0.505]),
+])
+def test_scan_targets_use_15cm_segments_and_finish_at_endpoint(monkeypatch, direction, distance, expected):
     scan = [{"qr_code": "A", "level_number": 1}]
-    result, _, targets, _ = run_inventory(monkeypatch, direction * 0.505, [scan] * 4)
+    result, _, targets, _ = run_inventory(monkeypatch, direction * distance, [scan] * len(expected))
     assert result["status"] == "ok", result
-    assert [target["y"] for target in targets] == pytest.approx(
-        [0, direction * 0.2, direction * 0.4, direction * 0.505])
+    assert [target["y"] for target in targets] == pytest.approx([direction * value for value in expected])
     segments = [item["result"] for item in result["results"] if item["step"] == "MOVE_ALONG_INVENTORY_SHELF"]
-    assert [item["actual_displacement_m"] for item in segments] == pytest.approx([0.2, 0.2, 0.105])
+    assert [item["actual_displacement_m"] for item in segments] == pytest.approx(
+        [b - a for a, b in zip(expected, expected[1:])])
 
 
 def test_empty_shelf_does_not_reach_verify(monkeypatch):
-    result, _, _, verified = run_inventory(monkeypatch, 0.2, [[], []])
+    result, _, _, verified = run_inventory(monkeypatch, 0.2, [[], [], []])
     assert result["status"] == "error"
     assert not verified
     assert "No books" in result["error"]
@@ -204,7 +209,7 @@ def test_multiple_shelves_clear_previous_scan_and_generate_report(monkeypatch):
             "start_endpoint": {"endpoint_id": name + "1", "x": 0.0, "y": y, "theta": 0.0, "map_id": "map-1"},
             "end_endpoint": {"endpoint_id": name + "2", "x": 0.0, "y": y + 0.2, "theta": 0.0, "map_id": "map-1"}}
     engine.context.update_variables({"runtime_id": "sim", "current_shelf": shelf_data("A", 0),
-        "scan_queue": [[{"qr_code": code, "level_number": 1}] for code in ("A", "A", "B", "B")]})
+        "scan_queue": [[{"qr_code": code, "level_number": 1}] for code in ("A", "A", "A", "B", "B", "B")]})
     monkeypatch.setattr("steps.move.NavigationController.navigate", lambda self, goal: {
         "move_status": "COMPLETED", "final_pose": goal["target"]})
     monkeypatch.setattr("hardware.shelf_motion.ShelfMotionController.move_to",
