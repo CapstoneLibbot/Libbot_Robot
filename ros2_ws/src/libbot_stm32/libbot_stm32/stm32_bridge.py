@@ -88,6 +88,7 @@ class STM32Bridge(Node):
         self.last_encoder_timeout_logged = False
         self.last_serial_error_logged = 0.0
         self.last_velocity_ack_logged = 0.0
+        self.last_velocity_command_logged = 0.0
         self.last_imu_calibration = None
         self.last_blocked_mask = None
 
@@ -128,7 +129,10 @@ class STM32Bridge(Node):
             suffix = '' if limited == requested else (
                 f' | limited m/s,rad/s={vx:.3f},{vy:.3f},{wz:.3f}'
             )
-            self.get_logger().debug(f'TX UART: {cmd.strip()} | written={written}/{len(data)}{suffix}')
+            now = time.monotonic()
+            if now - self.last_velocity_command_logged >= 1.0:
+                self.get_logger().info(f'TX UART: {cmd.strip()}{suffix}')
+                self.last_velocity_command_logged = now
 
         except (serial.SerialException, OSError) as exc:
             self.get_logger().error(f'UART error: {exc}')
@@ -179,6 +183,8 @@ class STM32Bridge(Node):
                 line = line_bytes.decode('utf-8', errors='ignore').strip()
                 if line.startswith('ENC,'):
                     self.process_encoder(line)
+                elif line.startswith('MOT,'):
+                    self.process_motor_diagnostics(line)
                 elif line.startswith('BAT,'):
                     self.process_battery(line)
                 elif line.startswith('IMU,'):
@@ -205,6 +211,23 @@ class STM32Bridge(Node):
             if time.monotonic() - self.last_serial_error_logged > 2.0:
                 self.get_logger().error(f'UART read error: {exc}')
                 self.last_serial_error_logged = time.monotonic()
+
+    def process_motor_diagnostics(self, line):
+        try:
+            values = tuple(int(value) for value in line.split(',')[1:])
+            if len(values) != 17:
+                raise ValueError('expected 17 values')
+        except ValueError as exc:
+            self.get_logger().warning(f'Invalid motor diagnostics: {exc}: {line[:100]}')
+            return
+        vx, vy, wz, blocked, invalid_periods = values[:5]
+        target, measured, pwm = values[5:9], values[9:13], values[13:17]
+        self.get_logger().info(
+            f'Motor diagnostics M1=FL M2=FR M3=RL M4=RR: '
+            f'safe_cmd(mm/s,mrad/s)=({vx},{vy},{wz}) blocked_mask={blocked} '
+            f'target_mm/s={target} encoder_mm/s={measured} '
+            f'applied_pwm={pwm} invalid_pid_periods={invalid_periods}'
+        )
 
     @staticmethod
     def battery_voltage_to_percentage(voltage):
