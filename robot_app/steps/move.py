@@ -272,15 +272,20 @@ class MoveStep(BaseStep):
             try:
                 from steps.inventory_navigation import resolve_shelf_endpoints
                 start, end = resolve_shelf_endpoints(context, self.runtime_gateway)
-                distance = math.hypot(end["x"] - start["x"], end["y"] - start["y"])
-                segments = math.ceil(distance / self.INVENTORY_TARGET_SEGMENT_M - 1e-9)
-                if not 1 <= segments <= 1000:
-                    raise ValueError("Inventory shelf must require between 1 and 1000 scan segments.")
+                if end is None:
+                    segments = 0
+                    scan_complete = True
+                else:
+                    distance = math.hypot(end["x"] - start["x"], end["y"] - start["y"])
+                    segments = math.ceil(distance / self.INVENTORY_TARGET_SEGMENT_M - 1e-9)
+                    if not 1 <= segments <= 1000:
+                        raise ValueError("Inventory shelf must require between 1 and 1000 scan segments.")
+                    scan_complete = False
                 context.set("inventory_scan_start", start)
                 context.set("inventory_scan_end", end)
                 context.set("inventory_scan_segments", segments)
                 context.set("inventory_scan_index", 0)
-                context.set("inventory_scan_complete", False)
+                context.set("inventory_scan_complete", scan_complete)
                 context.set("inventory_scanned_items", [])
                 context.set("scanned_items", [])
                 resolved_goal, goal_error = {"target": start, "path_id": None}, None
@@ -312,6 +317,27 @@ class MoveStep(BaseStep):
             "current_pose": current_pose,
         }
         capture_started = False
+        patrol_reporter = None
+        patrol_detector_error = None
+        detector_config = self.config.get("_patrol_detector")
+        if self.scan_while_moving and isinstance(detector_config, dict) \
+                and str(context.get("runtime_id", "real")).lower() == "real" \
+                and resolved_goal.get("path_id"):
+            try:
+                from hardware.patrol_detection import PatrolDetectionReporter
+                patrol_reporter = PatrolDetectionReporter(
+                    scanner_device=str(detector_config.get("device") or ""),
+                    backend_base_url=str(context.get("backend_base_url") or ""),
+                    mission_id=str(context.get("mission_id") or context.get("task_id") or ""),
+                    execution_id=str(context.get("execution_id") or ""),
+                    path_id=str(resolved_goal.get("path_id")),
+                    waypoint=requested_target,
+                    threshold=float(detector_config.get("threshold", 0.70)),
+                )
+                if not patrol_reporter.start():
+                    patrol_detector_error = patrol_reporter.last_error
+            except Exception as exc:
+                patrol_detector_error = f"Could not start patrol leaning-book detection: {exc}"
         if self.scan_while_moving and self.runtime_gateway is not None:
             begin_capture = getattr(self.runtime_gateway, "begin_patrol_capture", None)
             if callable(begin_capture):
@@ -321,6 +347,9 @@ class MoveStep(BaseStep):
             nav_result = self.navigation.navigate(goal)
         finally:
             capture = {"observations": [], "actual_distance_m": 0.0}
+            if patrol_reporter is not None:
+                patrol_reporter.stop()
+                patrol_detector_error = patrol_reporter.last_error or patrol_detector_error
             if capture_started:
                 finish_capture = getattr(self.runtime_gateway, "finish_patrol_capture", None)
                 if callable(finish_capture):
@@ -383,6 +412,8 @@ class MoveStep(BaseStep):
             "observations": capture.get("observations", []),
             "actual_distance_m": float(capture.get("actual_distance_m", 0.0) or 0.0),
         }
+        if patrol_detector_error:
+            result["patrol_detection_error"] = patrol_detector_error
         if message:
             result["message"] = message
         return result
