@@ -18,9 +18,7 @@ def resolve_shelf_endpoints(context, gateway):
         raise ValueError("Current map pose is invalid.") from exc
     if not math.isfinite(pose_x) or not math.isfinite(pose_y):
         raise ValueError("Current map pose is invalid.")
-    endpoints = []
-    for name in ("start_endpoint", "end_endpoint"):
-        data = shelf.get(name)
+    def parse_endpoint(data, name):
         if not isinstance(data, dict):
             raise ValueError(f"Inventory scope is missing {name}; refresh the task with the updated backend.")
         try:
@@ -32,18 +30,25 @@ def resolve_shelf_endpoints(context, gateway):
             raise ValueError(f"Inventory scope has an invalid {name} ID.")
         if not all(math.isfinite(endpoint[k]) for k in ("x", "y", "theta")):
             raise ValueError("Shelf endpoint pose is invalid.")
-        endpoints.append(endpoint)
-    if (not endpoints[0]["map_id"] or not endpoints[1]["map_id"]
-            or str(endpoints[0]["map_id"]).lower() != str(endpoints[1]["map_id"]).lower()):
-        raise ValueError("Shelf endpoints must belong to the same map.")
+        return endpoint
+
+    start = parse_endpoint(shelf.get("start_endpoint"), "start_endpoint")
+    end_data = shelf.get("end_endpoint")
+    if shelf.get("sweep_shelf") is False or end_data is None:
+        end = None
+    else:
+        end = parse_endpoint(end_data, "end_endpoint")
     active_map = getattr(gateway, "_active_map_id", None)
     if not active_map:
         raise ValueError("The active navigation map is unavailable.")
-    if str(active_map).lower() != str(endpoints[0]["map_id"]).lower():
+    if not start["map_id"] or str(active_map).lower() != str(start["map_id"]).lower():
         raise ValueError("Shelf endpoints do not belong to the active map.")
-    a, b = endpoints
-    if str(a["endpoint_id"]).lower() == str(b["endpoint_id"]).lower():
-        raise ValueError("Shelf must have two distinct endpoints.")
+    if end is None or str(start["endpoint_id"]).lower() == str(end["endpoint_id"]).lower():
+        return start, None
+    if (not end["map_id"] or str(start["map_id"]).lower() != str(end["map_id"]).lower()
+            or str(active_map).lower() != str(end["map_id"]).lower()):
+        raise ValueError("Shelf endpoints must belong to the same active map.")
+    a, b = start, end
     dx, dy = b["x"] - a["x"], b["y"] - a["y"]
     length = math.hypot(dx, dy)
     yaw_diff = math.atan2(math.sin(a["theta"] - b["theta"]), math.cos(a["theta"] - b["theta"]))

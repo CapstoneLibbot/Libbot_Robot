@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from urllib import request
 
 from core.context import RobotContext
+from hardware.barcode_scanner import BarcodeScanner
 from steps import (
     BaseStep,
     DisplayStep,
@@ -352,7 +353,7 @@ class WorkflowEngine:
             prefix += "_"
         move_id, scan_id, evaluate_id = (f"{prefix}_{suffix}" for suffix in ("move", "scan", "evaluate"))
         scan["params"]["_inventory_shelf_scan"] = True
-        scan["transitions"]["on_success"] = move_id
+        scan["transitions"]["on_success"] = evaluate_id
         repeated_scan = copy.deepcopy(scan)
         repeated_scan.update(id=scan_id, name="SCAN_INVENTORY_POSITION")
         repeated_scan["transitions"]["on_success"] = evaluate_id
@@ -597,6 +598,7 @@ class WorkflowEngine:
         require_hardware: bool,
         allow_active_workflow: bool = False,
         require_robot_ui: bool = True,
+        require_patrol_detector: bool = False,
     ) -> Dict[str, Any]:
         runtime_id = str(os.getenv("LIBOT_RUNTIME_ID") or self.settings.get("runtime", {}).get("id", "real")).lower()
         checks: Dict[str, Any] = {"runtime_id": runtime_id}
@@ -628,6 +630,14 @@ class WorkflowEngine:
             checks["scanner"] = scanner_check
             if scanner_check.get("status") != "ready":
                 return self._error(scanner_check.get("message", "IMX500 camera is unavailable."), "PREFLIGHT_FAILED", checks=checks)
+            if require_patrol_detector:
+                detector_check = BarcodeScanner(scanner).patrol_status()
+                checks["patrol_detector"] = detector_check
+                if detector_check.get("status") != "ready":
+                    return self._error(
+                        detector_check.get("message", "Patrol leaning-book detector is unavailable."),
+                        "PREFLIGHT_FAILED", checks=checks,
+                    )
             if require_robot_ui:
                 ui = hardware.get("ui", {})
                 if not ui.get("enabled", False) or str(ui.get("driver", "tkinter")).lower() != "tkinter":
@@ -664,6 +674,14 @@ class WorkflowEngine:
         runtime_id = str(request.get("runtime_id", "")).lower()
         if allow_safe_queue and runtime_id != "real":
             return self._error("Automatic charging is available only for the real runtime.")
+        if runtime_id == "real" and str(request.get("workflow_type", "")).upper() == "LIBRARY_PATROL":
+            scanner = self.settings.get("hardware", {}).get("scanner", {})
+            detector_check = BarcodeScanner(scanner).patrol_status()
+            if detector_check.get("status") != "ready":
+                return self._error(
+                    detector_check.get("message", "LIBRARY_PATROL requires an available IMX500 leaning-book detector."),
+                    "PREFLIGHT_FAILED",
+                )
         execution_id = str(request.get("execution_id") or uuid.uuid4())
 
         queued = False
@@ -747,6 +765,7 @@ class WorkflowEngine:
                 bool(request.get("require_hardware", False)),
                 allow_active_workflow=bool(request.get("allow_active_workflow", False)),
                 require_robot_ui=bool(request.get("require_robot_ui", True)),
+                require_patrol_detector=bool(request.get("require_patrol_detector", False)),
             )
 
         if command == "cancel_workflow":
@@ -1001,6 +1020,13 @@ class WorkflowEngine:
             else:
                 enriched.setdefault("device", scanner.get("device", enriched.get("sensor", "camera")))
             enriched.setdefault("timeout_sec", scanner.get("timeout_sec", 5))
+
+        if step_type == "MOVE" and enriched.get("scan_while_moving"):
+            scanner = hardware.get("scanner", {})
+            enriched["_patrol_detector"] = {
+                "device": scanner.get("device"),
+                "threshold": scanner.get("patrol_threshold", 0.70),
+            }
 
         if step_type == "WAIT":
             motion_safety = hardware.get("motion_safety")
