@@ -27,7 +27,7 @@ if [[ "${service_user}" == "root" ]]; then
 fi
 
 apt-get update
-apt-get install -y python3-picamera2 python3-pil python3-venv libzbar0 openssl
+apt-get install -y imx500-all imx500-tools python3-picamera2 python3-pil python3-venv libzbar0 openssl
 
 install -d -m 0755 /etc/libot /usr/local/lib/libot
 python_venv="/usr/local/lib/libot/imx500-venv"

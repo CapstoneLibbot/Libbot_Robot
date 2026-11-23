@@ -77,6 +77,19 @@ class BarcodeScanner:
         except Exception as exc:
             return {"status": "error", "message": f"IMX500 camera unavailable: {exc}"}
 
+    def patrol_status(self) -> Dict[str, Any]:
+        if not str(self.device or "").startswith("imx500-tcp://"):
+            return {"status": "error", "message": "Patrol detection requires the IMX500 TCP camera service."}
+        try:
+            return self._send_imx500_tcp_command({"command": "patrol_status"}, timeout_sec=15.0, max_response_bytes=65536)
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            return {"status": "error", "message": f"Patrol detector service unavailable: {exc}"}
+
+    def patrol_command(self, command: str, **values: Any) -> Dict[str, Any]:
+        if not str(self.device or "").startswith("imx500-tcp://"):
+            return {"status": "error", "message": "Patrol detection requires the IMX500 TCP camera service."}
+        return self._send_imx500_tcp_command({"command": command, **values}, timeout_sec=4.0, max_response_bytes=8 * 1024 * 1024)
+
     def _scan_imx500_tcp(
         self,
         timeout_sec: float,
@@ -85,16 +98,12 @@ class BarcodeScanner:
         multiple: bool,
     ) -> Dict[str, Any]:
         try:
-            host, port = self._scanner_address(str(self.device))
-            with socket.create_connection((host, port), timeout=3) as connection:
-                connection.settimeout(max(timeout_sec, 0.5) + 3)
-                connection.sendall((json.dumps({
-                    "command": "scan",
-                    "timeout_sec": timeout_sec,
-                    "scan_type": scan_type,
-                    "multiple": multiple,
-                }) + "\n").encode("utf-8"))
-                response = self._read_json_line(connection)
+            response = self._send_imx500_tcp_command({
+                "command": "scan",
+                "timeout_sec": timeout_sec,
+                "scan_type": scan_type,
+                "multiple": multiple,
+            }, timeout_sec=max(timeout_sec, 0.5) + 3, max_response_bytes=65536)
             response.setdefault("source", "imx500")
             response.setdefault("duration_ms", int((time.monotonic() - started_at) * 1000))
             return response
@@ -105,6 +114,18 @@ class BarcodeScanner:
                 "duration_ms": int((time.monotonic() - started_at) * 1000),
             }
 
+    def _send_imx500_tcp_command(
+        self,
+        payload: Dict[str, Any],
+        timeout_sec: float,
+        max_response_bytes: int,
+    ) -> Dict[str, Any]:
+        host, port = self._scanner_address(str(self.device))
+        with socket.create_connection((host, port), timeout=3) as connection:
+            connection.settimeout(timeout_sec)
+            connection.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+            return self._read_json_line(connection, max_response_bytes=max_response_bytes)
+
     @staticmethod
     def _scanner_address(device: str) -> tuple[str, int]:
         parsed = urlparse(device)
@@ -113,9 +134,9 @@ class BarcodeScanner:
         return parsed.hostname, parsed.port
 
     @staticmethod
-    def _read_json_line(connection: socket.socket) -> Dict[str, Any]:
+    def _read_json_line(connection: socket.socket, max_response_bytes: int = 65536) -> Dict[str, Any]:
         chunks = bytearray()
-        while len(chunks) < 65536:
+        while len(chunks) < max_response_bytes:
             data = connection.recv(4096)
             if not data:
                 break

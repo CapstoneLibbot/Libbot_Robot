@@ -31,7 +31,8 @@
     "scanner": {
       "enabled": true,
       "device": "imx500-tcp://127.0.0.1:9011",
-      "timeout_sec": 5
+      "timeout_sec": 5,
+      "patrol_threshold": 0.70
     },
     "motion_safety": {
       "enabled": true,

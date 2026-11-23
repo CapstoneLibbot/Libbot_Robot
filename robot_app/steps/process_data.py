@@ -6,6 +6,7 @@ import math
 import os
 from typing import Any, Dict, Optional
 from urllib import parse, request
+from urllib.error import HTTPError
 
 from core.context import RobotContext
 from steps.base_step import BaseStep
@@ -201,8 +202,17 @@ class ProcessDataStep(BaseStep):
         http_request.add_header("Accept", "application/json")
         if payload is not None:
             http_request.add_header("Content-Type", "application/json")
-        with request.urlopen(http_request, timeout=self.timeout_sec) as response:
-            return json.loads(response.read().decode("utf-8"))
+        try:
+            with request.urlopen(http_request, timeout=self.timeout_sec) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            response_body = exc.read().decode("utf-8", errors="replace")
+            try:
+                error_payload = json.loads(response_body)
+            except json.JSONDecodeError:
+                error_payload = {}
+            detail = error_payload.get("message") or error_payload.get("detail") or response_body.strip()
+            raise ValueError(f"Backend returned HTTP {exc.code}: {detail or exc.reason}") from exc
 
     def _require_base_url(self, base_url: str) -> None:
         if not base_url:
