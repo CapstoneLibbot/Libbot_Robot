@@ -107,7 +107,7 @@ class ProcessDataStep(BaseStep):
                     f"{base_url}/api/workflow-data/inventory/scan",
                     method="POST",
                     body={
-                        "missionId": payload.get("mission_id") or context.get("mission_id"),
+                        "jobId": payload.get("job_id") or context.get("job_id"),
                         "runtimeId": payload.get("runtime_id") or runtime_id,
                         "barcode": payload.get("barcode"),
                         "shelfCode": payload.get("shelf_code"),
@@ -119,7 +119,7 @@ class ProcessDataStep(BaseStep):
                     f"{base_url}/api/workflow-data/inventory/reports",
                     method="POST",
                     body={
-                        "missionId": payload.get("mission_id") or context.get("mission_id"),
+                        "jobId": payload.get("job_id") or context.get("job_id"),
                         "runtimeId": payload.get("runtime_id") or runtime_id,
                         "shelfCode": payload.get("shelf_code"),
                         "scopeType": payload.get("scope_type", "SHELF"),
@@ -142,7 +142,7 @@ class ProcessDataStep(BaseStep):
                     f"{base_url}/api/workflow-data/patrol/observations",
                     method="POST",
                     body={
-                        "missionId": payload.get("mission_id") or context.get("mission_id"),
+                        "jobId": payload.get("job_id") or context.get("job_id"),
                         "runtimeId": payload.get("runtime_id") or runtime_id,
                         "observation": payload.get("observation"),
                     },
@@ -153,7 +153,7 @@ class ProcessDataStep(BaseStep):
                     f"{base_url}/api/workflow-data/patrol/reports",
                     method="POST",
                     body={
-                        "missionId": payload.get("mission_id") or context.get("mission_id"),
+                        "jobId": payload.get("job_id") or context.get("job_id"),
                         "runtimeId": payload.get("runtime_id") or runtime_id,
                     },
                 )
@@ -170,7 +170,7 @@ class ProcessDataStep(BaseStep):
                     f"{base_url}/api/workflow-data/patrol/actions",
                     method="POST",
                     body={
-                        "missionId": action_payload.get("mission_id") or context.get("mission_id"),
+                        "jobId": action_payload.get("job_id") or context.get("job_id"),
                         "runtimeId": action_payload.get("runtime_id") or runtime_id,
                         "action": self.operation,
                         "payload": action_payload,
@@ -222,8 +222,8 @@ class ProcessDataStep(BaseStep):
         canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         fingerprint = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
         execution_id = str(context.get("execution_id") or "legacy")
-        mission_id = str(context.get("mission_id") or "mission")
-        return f"{mission_id}:{execution_id}:{self.operation}:{fingerprint}"
+        job_id = str(context.get("job_id") or "job")
+        return f"{job_id}:{execution_id}:{self.operation}:{fingerprint}"
 
     def _resolve_backend_base_url(self, context: RobotContext) -> str:
         # The API request host may be `localhost`, which refers to the robot

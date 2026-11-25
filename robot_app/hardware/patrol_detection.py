@@ -16,7 +16,7 @@ class PatrolDetectionReporter:
         self,
         scanner_device: str,
         backend_base_url: str,
-        mission_id: str,
+        job_id: str,
         execution_id: str,
         path_id: str,
         waypoint: Any,
@@ -24,7 +24,7 @@ class PatrolDetectionReporter:
     ) -> None:
         self.scanner = BarcodeScanner({"device": scanner_device})
         self.backend_base_url = backend_base_url.rstrip("/")
-        self.mission_id = mission_id
+        self.job_id = job_id
         self.execution_id = execution_id
         self.path_id = path_id
         self.waypoint = waypoint
@@ -35,8 +35,8 @@ class PatrolDetectionReporter:
         self.started = False
 
     def start(self) -> bool:
-        if not self.backend_base_url or not self.mission_id or not self.execution_id or not self.path_id:
-            self.last_error = "Patrol evidence upload requires backend, mission, execution, and path identifiers."
+        if not self.backend_base_url or not self.job_id or not self.execution_id or not self.path_id:
+            self.last_error = "Patrol evidence upload requires backend, job, execution, and path identifiers."
             return False
         try:
             result = self.scanner.patrol_command("patrol_begin", threshold=self.threshold)
@@ -83,7 +83,7 @@ class PatrolDetectionReporter:
                     self._stop.wait(0.2)
                     continue
                 payload = {
-                    "missionId": self.mission_id,
+                    "jobId": self.job_id,
                     "runtimeId": "real",
                     "executionId": self.execution_id,
                     "pathId": self.path_id,

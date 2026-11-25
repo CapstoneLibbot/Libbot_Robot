@@ -35,16 +35,16 @@ class InventoryActionClient:
     ) -> Dict[str, Any]:
         if not backend_base_url:
             raise ValueError("backend_base_url is required for this inventory PROCESS_DATA action.")
-        mission_id = payload.get("mission_id") or context.get("mission_id") or context.get("task_id")
-        execution_id = context.get("execution_id") or mission_id
-        if not mission_id or not execution_id:
-            raise ValueError("mission_id and execution_id are required for inventory actions.")
+        job_id = payload.get("job_id") or context.get("job_id") or context.get("task_id")
+        execution_id = context.get("execution_id") or job_id
+        if not job_id or not execution_id:
+            raise ValueError("job_id and execution_id are required for inventory actions.")
 
         response = self._json_request(
             f"{backend_base_url.rstrip('/')}/api/workflow-data/inventory/actions",
             method="POST",
             body={
-                "missionId": mission_id,
+                "jobId": job_id,
                 "runtimeId": runtime_id,
                 "executionId": execution_id,
                 "action": action,

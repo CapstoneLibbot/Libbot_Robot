@@ -66,7 +66,7 @@ class ScanStep(BaseStep):
         context_value = context.pop_next(queue_key) if runtime_id == "sim" else None
         if runtime_id != "sim" and self.sensor != "patrol_observation":
             # Legacy one-step callers that do not name a runtime may inject an
-            # explicit test/manual value; dispatched missions always set runtime_id.
+            # explicit test/manual value; dispatched jobs always set runtime_id.
             context_value = context.get(self.context_key) if not runtime_id else None
         if context_value is None and self.sensor == "patrol_observation":
             context_value = context.get(self.context_key)

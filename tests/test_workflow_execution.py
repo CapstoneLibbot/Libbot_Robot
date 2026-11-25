@@ -141,7 +141,7 @@ def test_execution_publishes_waiting_step_type_and_completes(monkeypatch):
     response = engine.handle_request({
         "command": "start_workflow",
         "execution_id": "test-execution",
-        "task_id": "test-mission",
+        "task_id": "test-job",
         "runtime_id": "sim",
         "initial_context": {"runtime_id": "sim"},
         "steps": [
@@ -193,7 +193,7 @@ def test_cancel_interrupts_wait_and_reports_cancelled(monkeypatch):
     response = engine.handle_request({
         "command": "start_workflow",
         "execution_id": "cancel-execution",
-        "task_id": "cancel-mission",
+        "task_id": "cancel-job",
         "runtime_id": "sim",
         "initial_context": {"runtime_id": "sim"},
         "steps": [{

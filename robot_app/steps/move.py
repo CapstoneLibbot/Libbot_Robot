@@ -328,7 +328,7 @@ class MoveStep(BaseStep):
                 patrol_reporter = PatrolDetectionReporter(
                     scanner_device=str(detector_config.get("device") or ""),
                     backend_base_url=str(context.get("backend_base_url") or ""),
-                    mission_id=str(context.get("mission_id") or context.get("task_id") or ""),
+                    job_id=str(context.get("job_id") or context.get("task_id") or ""),
                     execution_id=str(context.get("execution_id") or ""),
                     path_id=str(resolved_goal.get("path_id")),
                     waypoint=requested_target,

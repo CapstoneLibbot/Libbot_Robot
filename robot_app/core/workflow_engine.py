@@ -318,7 +318,7 @@ class WorkflowEngine:
             "requested_count": len(step_defs),
             "completed_count": len(results),
             "failed_step": failed_step,
-            "error": "LOW_BATTERY: mission interrupted at a safe step boundary." if low_battery_preempted else failure_message,
+            "error": "LOW_BATTERY: job interrupted at a safe step boundary." if low_battery_preempted else failure_message,
             "results": results,
         }
 
@@ -407,7 +407,7 @@ class WorkflowEngine:
                 **execution,
                 "status": "cancelled" if cancelled_before_start else "running",
                 "task_id": task_id,
-                "mission_id": task_id,
+                "job_id": task_id,
                 "runtime_id": execution.get("runtime_id") or self.context.get("runtime_id"),
                 "current_step": None,
                 "current_step_name": None,
@@ -422,7 +422,7 @@ class WorkflowEngine:
                 and self._is_low_battery_preempt_requested(execution_id)
                 and result.get("status") != "cancelled"):
             result["status"] = "cancelled"
-            result["error"] = "LOW_BATTERY: mission interrupted at a safe step boundary."
+            result["error"] = "LOW_BATTERY: job interrupted at a safe step boundary."
         final_status = "cancelled" if result.get("status") == "cancelled" else "completed" if result.get("status") == "ok" else "failed"
         with self.lock:
             self.executions[execution_id] = {
@@ -477,9 +477,9 @@ class WorkflowEngine:
             execution = dict(self.executions.get(execution_id, {}))
         if result is None:
             result = execution.get("last_result")
-        mission_id = execution.get("mission_id") or execution.get("task_id")
+        job_id = execution.get("job_id") or execution.get("task_id")
         base_url = str(os.getenv("LIBOT_BACKEND_URL") or self.context.get("backend_base_url") or "").strip().rstrip("/")
-        if not base_url or not mission_id:
+        if not base_url or not job_id:
             return
         if error is None:
             error = execution.get("last_error")
@@ -497,7 +497,7 @@ class WorkflowEngine:
             "error": error,
         }).encode("utf-8")
         callback = request.Request(
-            f"{base_url}/api/missions/{mission_id}/execution/events/state",
+            f"{base_url}/api/jobs/{job_id}/execution/events/state",
             data=body,
             method="POST",
             headers={"Content-Type": "application/json"},
@@ -508,11 +508,11 @@ class WorkflowEngine:
         except OSError as exc:
             self.context.update_metadata(execution_callback_error=str(exc))
 
-    def _report_completion(self, mission_id: Any, execution_id: str, result: Dict[str, Any]) -> None:
+    def _report_completion(self, job_id: Any, execution_id: str, result: Dict[str, Any]) -> None:
         base_url = str(
             os.getenv("LIBOT_BACKEND_URL") or self.context.get("backend_base_url") or ""
         ).strip().rstrip("/")
-        if not base_url or not mission_id:
+        if not base_url or not job_id:
             return
         body = json.dumps({
             "status": "CANCELLED" if result.get("status") == "cancelled" else "SUCCEEDED" if result.get("status") == "ok" else "FAILED",
@@ -520,7 +520,7 @@ class WorkflowEngine:
             "message": result.get("error") or result.get("failed_step"),
         }).encode("utf-8")
         callback = request.Request(
-            f"{base_url}/api/missions/{mission_id}/execution/completed",
+            f"{base_url}/api/jobs/{job_id}/execution/completed",
             data=body,
             method="POST",
             headers={"Content-Type": "application/json"},
@@ -703,7 +703,7 @@ class WorkflowEngine:
                 self.executions[execution_id] = {
                     "status": "queued",
                     "task_id": request.get("task_id"),
-                    "mission_id": request.get("mission_id", request.get("task_id")),
+                    "job_id": request.get("job_id", request.get("task_id")),
                     "runtime_id": runtime_id,
                     "is_auto_charge": True,
                 }
@@ -719,7 +719,7 @@ class WorkflowEngine:
                 self.executions[execution_id] = {
                     "status": "accepted",
                     "task_id": request.get("task_id"),
-                    "mission_id": request.get("mission_id", request.get("task_id")),
+                    "job_id": request.get("job_id", request.get("task_id")),
                     "runtime_id": request.get("runtime_id", self.context.get("runtime_id")),
                     "assigned_book_id": initial_context.get("book_id"),
                     "current_step": None,
