@@ -8,6 +8,7 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -835,14 +836,37 @@ class RobotRuntimeGateway:
     ) -> Dict[str, Any]:
         if self._mapping_process is not None and self._mapping_process.poll() is None:
             return self._failure("Stop SLAM mapping before starting Nav2.")
-        path = Path(map_path).resolve()
-        if (
-            not path.is_absolute()
-            or path.suffix.lower() != ".yaml"
-            or self.maps_dir not in path.parents
-            or not path.is_file()
-        ):
+        requested_path = Path(map_path)
+        if not requested_path.is_absolute() or requested_path.suffix.lower() != ".yaml":
             return self._failure("The selected map YAML is not available on the robot.")
+        path = requested_path.resolve()
+        if self.maps_dir not in path.parents:
+            return self._failure("The selected map YAML is not available on the robot.")
+        if not path.is_file():
+            if not map_id:
+                return self._failure(f"The selected map YAML is missing on the robot: {path}.")
+            try:
+                saved_map_id = str(uuid.UUID(map_id))
+                saved_map = self._get_backend_json(
+                    f"{self.backend_url}/api/maps/{saved_map_id}"
+                )
+                grid = self._grid_from_saved_map(saved_map)
+                restored_path, _ = self._write_grid_files(grid, path.with_suffix(""))
+                if restored_path.resolve() != path or not path.is_file():
+                    raise OSError("restored map files do not match the requested YAML path")
+                print(f"Restored missing navigation map from backend: {path}", flush=True)
+            except (
+                HTTPError,
+                URLError,
+                OSError,
+                ValueError,
+                TypeError,
+                json.JSONDecodeError,
+            ) as exc:
+                return self._failure(
+                    f"The selected map YAML is missing on the robot ({path}); "
+                    f"restoring it from the backend failed: {exc}"
+                )
         if self._navigation_process is not None and self._navigation_process.poll() is None:
             with self._lock:
                 previous_start_failed = self.navigation_mode_state == "ERROR"
