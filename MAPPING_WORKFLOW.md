@@ -142,7 +142,7 @@ ros2_ws/src/libot_bringup/launch/mapping.launch.py
 Nội dung launch cần khởi động:
 - `robot_state_publisher`
 - `libbot_stm32` bridge
-- lidar driver (`rplidar_ros` hoặc tương đương)
+- lidar driver `sllidar_ros2` cho RPLIDAR
 - `slam_toolbox`
 - `rviz2`
 
@@ -164,10 +164,16 @@ ros2 launch libot_bringup mapping.launch.py stm32_port:=/dev/ttyACM0 lidar_port:
 
 ### 7.1 Build workspace
 
+Docker image tự tải và build source `sllidar_ros2` vào
+`/ros2_ws/dependencies/sllidar_ros2`. Dependency nằm ngoài `src` vì Compose mount
+thư mục `src` từ host vào container.
+
 ```bash
 cd /ros2_ws
 source /opt/ros/jazzy/setup.bash
-colcon build --symlink-install --packages-select libot_description libbot_stm32 libot_mppi_critics libot_bringup
+colcon build --symlink-install \
+  --base-paths src/libot_description src/libbot_stm32 src/libot_mppi_critics src/libot_bringup dependencies/sllidar_ros2 \
+  --packages-select libot_description libbot_stm32 libot_mppi_critics libot_bringup sllidar_ros2
 source install/setup.bash
 ```
 
@@ -175,11 +181,13 @@ source install/setup.bash
 
 ```bash
 cd /path/to/libot_pi
-docker compose -f docker/compose.yaml --profile hardware up -d
+docker compose -f docker/compose.yaml --profile hardware up -d --build
 docker exec -it <container_name> bash
 cd /ros2_ws
 source /opt/ros/jazzy/setup.bash
-colcon build --symlink-install --packages-select libot_description libbot_stm32 libot_mppi_critics libot_bringup
+colcon build --symlink-install \
+  --base-paths src/libot_description src/libbot_stm32 src/libot_mppi_critics src/libot_bringup dependencies/sllidar_ros2 \
+  --packages-select libot_description libbot_stm32 libot_mppi_critics libot_bringup sllidar_ros2
 source install/setup.bash
 ```
 

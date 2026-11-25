@@ -51,8 +51,8 @@ docker exec -it libot_ros2_hardware bash
 source /opt/ros/jazzy/setup.bash
 cd /ros2_ws
 colcon build --symlink-install \
-  --base-paths src/libot_description src/libbot_stm32 src/libot_mppi_critics src/libot_bringup \
-  --packages-select libot_description libbot_stm32 libot_mppi_critics libot_bringup
+  --base-paths src/libot_description src/libbot_stm32 src/libot_mppi_critics src/libot_bringup dependencies/sllidar_ros2 \
+  --packages-select libot_description libbot_stm32 libot_mppi_critics libot_bringup sllidar_ros2
 source install/setup.bash
 
 ros2 launch libot_bringup mapping.launch.py \
@@ -111,8 +111,8 @@ docker exec -it libot_ros2_hardware bash
 source /opt/ros/jazzy/setup.bash
 cd /ros2_ws
 colcon build --symlink-install \
-  --base-paths src/libot_description src/libbot_stm32 src/libot_mppi_critics src/libot_bringup \
-  --packages-select libot_description libbot_stm32 libot_mppi_critics libot_bringup
+  --base-paths src/libot_description src/libbot_stm32 src/libot_mppi_critics src/libot_bringup dependencies/sllidar_ros2 \
+  --packages-select libot_description libbot_stm32 libot_mppi_critics libot_bringup sllidar_ros2
 source install/setup.bash
 
 ros2 launch libot_bringup navigation.launch.py \
