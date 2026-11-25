@@ -1,0 +1,7 @@
+image: 6e52bca1cd6b46e797e80e2d95b3eadf_speed_mask.pgm
+resolution: 0.0500000007451
+origin: [-3.28899486576, -0.39670282047, 0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
+mode: scale

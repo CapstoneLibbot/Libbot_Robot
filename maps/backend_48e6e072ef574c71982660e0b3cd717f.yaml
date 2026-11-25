@@ -1,0 +1,7 @@
+image: backend_48e6e072ef574c71982660e0b3cd717f.pgm
+mode: trinary
+resolution: 0.05000000074505806
+origin: [-0.6989658843748651, -2.777195122663293, 0.0]
+negate: 0
+occupied_thresh: 0.65
+free_thresh: 0.196
