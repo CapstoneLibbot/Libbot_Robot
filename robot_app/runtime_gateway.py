@@ -715,6 +715,63 @@ class RobotRuntimeGateway:
             body = response.read().decode("utf-8").strip()
             return json.loads(body) if body else None
 
+    def get_wait_endpoint(self) -> Dict[str, Any]:
+        """Resolve the active map's explicit WAIT endpoint or its unique PARK endpoint."""
+        with self._lock:
+            map_id = self._active_map_id
+        if not map_id:
+            raise ValueError("The active map is unavailable; cannot resolve a wait point.")
+
+        endpoints = self._get_backend_json(
+            f"{self.backend_url}/api/maps/{map_id}/endpoints"
+        )
+        if not isinstance(endpoints, list):
+            raise ValueError("The active map endpoint response is invalid.")
+
+        active: list[Dict[str, Any]] = []
+        for endpoint in endpoints:
+            if not isinstance(endpoint, dict):
+                continue
+            endpoint_map_id = endpoint.get("mapId", endpoint.get("map_id"))
+            if (str(endpoint_map_id or "").casefold() != str(map_id).casefold()
+                    or endpoint.get("isActive", endpoint.get("is_active")) is not True):
+                continue
+            active.append(endpoint)
+
+        def normalized_name(endpoint: Dict[str, Any]) -> str:
+            return " ".join(str(endpoint.get("name", "")).casefold().replace("_", " ")
+                            .replace("-", " ").split())
+
+        named_wait = [endpoint for endpoint in active
+                      if normalized_name(endpoint) in {"wait", "wait point", "waiting point"}]
+        if len(named_wait) > 1:
+            raise ValueError("The active map has multiple active endpoints named as a wait point.")
+        candidates = named_wait
+        if not candidates:
+            candidates = [endpoint for endpoint in active
+                          if str(endpoint.get("endpointType", endpoint.get("endpoint_type", "")))
+                          .strip().upper() == "PARK"]
+        if len(candidates) != 1:
+            if not candidates:
+                raise ValueError("The active map has no active WAIT-named or PARK endpoint.")
+            raise ValueError("The active map has multiple active PARK endpoints; keep only one as the wait point.")
+
+        endpoint = candidates[0]
+        try:
+            target = {
+                "x": float(endpoint.get("positionX", endpoint.get("position_x"))),
+                "y": float(endpoint.get("positionY", endpoint.get("position_y"))),
+                "theta": float(endpoint.get("theta", 0.0)),
+                "endpoint_id": str(endpoint.get("id", "")),
+            }
+        except (TypeError, ValueError) as exc:
+            raise ValueError("The active map wait endpoint has invalid coordinates.") from exc
+        if not all(math.isfinite(target[key]) for key in ("x", "y", "theta")) or not target["endpoint_id"]:
+            raise ValueError("The active map wait endpoint has invalid coordinates or ID.")
+        target["name"] = str(endpoint.get("name") or "Wait point")
+        target["map_id"] = str(map_id)
+        return target
+
     @staticmethod
     def _grid_from_saved_map(saved: Any) -> Dict[str, Any]:
         if not isinstance(saved, dict):

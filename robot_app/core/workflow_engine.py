@@ -423,6 +423,7 @@ class WorkflowEngine:
                 and result.get("status") != "cancelled"):
             result["status"] = "cancelled"
             result["error"] = "LOW_BATTERY: job interrupted at a safe step boundary."
+        self._return_to_wait_point(execution_id, result)
         final_status = "cancelled" if result.get("status") == "cancelled" else "completed" if result.get("status") == "ok" else "failed"
         with self.lock:
             self.executions[execution_id] = {
@@ -441,6 +442,104 @@ class WorkflowEngine:
                 self._queued_auto_charge = None
         if queued_charge is not None:
             self._start_workflow(queued_charge, allow_safe_queue=True)
+
+    def _return_to_wait_point(self, execution_id: str, workflow_result: Dict[str, Any]) -> None:
+        if workflow_result.get("status") != "ok":
+            return
+        with self.lock:
+            execution = dict(self.executions.get(execution_id, {}))
+        runtime_id = str(execution.get("runtime_id") or self.context.get("runtime_id") or "real").lower()
+        workflow_type = str(execution.get("workflow_type") or "").upper()
+        if runtime_id != "real" or execution.get("is_auto_charge") or workflow_type == "ROBOT_RETURN_AND_CHARGING":
+            return
+
+        def record_skip(message: str) -> None:
+            detail = {"status": "skipped", "message": message}
+            workflow_result["return_to_wait_point"] = detail
+            with self.lock:
+                current = self.executions.get(execution_id)
+                if current is not None:
+                    current["return_to_wait_point"] = detail
+                    current["last_error"] = message
+            print(f"Could not return to the wait point: {message}", flush=True)
+
+        if self._is_cancelled(execution_id) or self._is_low_battery_preempt_requested(execution_id):
+            record_skip("Return was preempted by cancellation or low-battery handling.")
+            return
+
+        get_wait_endpoint = getattr(self.runtime_gateway, "get_wait_endpoint", None)
+        if not callable(get_wait_endpoint):
+            record_skip("Runtime gateway cannot resolve a wait point.")
+            return
+        try:
+            target = get_wait_endpoint()
+        except Exception as exc:
+            record_skip(str(exc))
+            return
+
+        if self._is_cancelled(execution_id) or self._is_low_battery_preempt_requested(execution_id):
+            record_skip("Return was preempted by cancellation or low-battery handling.")
+            return
+
+        step_def = {
+            "id": "__return_to_wait_point",
+            "name": "Return to wait point",
+            "type": "MOVE",
+            "params": {
+                "target": {key: target[key] for key in ("x", "y", "theta", "endpoint_id")},
+                "speed_mode": "NORMAL",
+                "obstacle_policy": "WAIT_RESUME",
+                "timeout_sec": 180,
+            },
+        }
+        self._set_current_step(execution_id, step_def)
+        try:
+            step_result = self.execute_step(step_def)
+        except Exception as exc:
+            now = datetime.now(timezone.utc).isoformat()
+            step_result = {
+                "step_id": step_def["id"],
+                "type": "MOVE",
+                "status": "FAILED",
+                "data": {"status": "error", "message": str(exc)},
+                "error": str(exc),
+                "attempt": 1,
+                "started_at": now,
+                "finished_at": now,
+                "engine_status": "ok",
+                "step": step_def["name"],
+                "step_type": "MOVE",
+                "result": {"status": "error", "message": str(exc)},
+            }
+
+        succeeded = self._step_succeeded(step_result, step_def)
+        step_detail = step_result.get("result", {})
+        error = None if succeeded else str(
+            step_detail.get("message") or step_detail.get("error") or "Could not reach the wait point."
+        )
+        detail = {
+            "status": "completed" if succeeded else "failed",
+            "endpoint_name": target["name"],
+            "endpoint_id": target["endpoint_id"],
+            "message": error,
+            "result": step_detail,
+        }
+        workflow_result["return_to_wait_point"] = detail
+        workflow_result.setdefault("results", []).append(step_result)
+        workflow_result["requested_count"] = int(workflow_result.get("requested_count", 0)) + 1
+        workflow_result["completed_count"] = int(workflow_result.get("completed_count", 0)) + 1
+        with self.lock:
+            current = self.executions.get(execution_id)
+            if current is not None:
+                current["return_to_wait_point"] = detail
+                current["last_result"] = step_detail
+                current["last_error"] = error
+        self._publish_execution(
+            execution_id,
+            "STEP_COMPLETED" if succeeded else "STEP_FAILED",
+            result=step_detail,
+            error=error,
+        )
 
     def _set_current_step(self, execution_id: str, step_def: Dict[str, Any]) -> None:
         step_type = str(step_def.get("type", "WAIT")).upper()
@@ -517,7 +616,8 @@ class WorkflowEngine:
         body = json.dumps({
             "status": "CANCELLED" if result.get("status") == "cancelled" else "SUCCEEDED" if result.get("status") == "ok" else "FAILED",
             "executionId": execution_id,
-            "message": result.get("error") or result.get("failed_step"),
+            "message": result.get("error") or result.get("failed_step")
+                or (result.get("return_to_wait_point") or {}).get("message"),
         }).encode("utf-8")
         callback = request.Request(
             f"{base_url}/api/jobs/{job_id}/execution/completed",
@@ -721,6 +821,7 @@ class WorkflowEngine:
                     "task_id": request.get("task_id"),
                     "job_id": request.get("job_id", request.get("task_id")),
                     "runtime_id": request.get("runtime_id", self.context.get("runtime_id")),
+                    "workflow_type": request.get("workflow_type"),
                     "assigned_book_id": initial_context.get("book_id"),
                     "current_step": None,
                     "current_step_name": None,
