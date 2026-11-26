@@ -425,24 +425,13 @@ class WorkflowEngine:
                 and result.get("status") != "cancelled"):
             result["status"] = "cancelled"
             result["error"] = "LOW_BATTERY: job interrupted at a safe step boundary."
+        completion_reported = False
         if result.get("status") == "ok":
+            # The configured workflow has finished at the destination. Report that now so
+            # the mobile app can open its feedback screen while the robot waits here.
+            completion_reported = self._report_completion(task_id, execution_id, result)
             self._wait_for_guidance_feedback(execution_id, result)
-            if self._is_cancelled(execution_id) or self._is_low_battery_preempt_requested(execution_id):
-                result["status"] = "cancelled"
-                result["error"] = (
-                    "LOW_BATTERY: job interrupted while waiting for reader feedback."
-                    if self._is_low_battery_preempt_requested(execution_id)
-                    else "Job was cancelled while waiting for reader feedback."
-                )
         self._return_to_wait_point(execution_id, result)
-        if (result.get("status") == "ok"
-                and (self._is_cancelled(execution_id) or self._is_low_battery_preempt_requested(execution_id))):
-            result["status"] = "cancelled"
-            result["error"] = (
-                "LOW_BATTERY: job interrupted while returning to the wait point."
-                if self._is_low_battery_preempt_requested(execution_id)
-                else "Job was cancelled while returning to the wait point."
-            )
         final_status = "cancelled" if result.get("status") == "cancelled" else "completed" if result.get("status") == "ok" else "failed"
         with self.lock:
             self.executions[execution_id] = {
@@ -453,8 +442,9 @@ class WorkflowEngine:
                 "allowed_values": [],
                 "result": result,
             }
-        self._publish_execution(execution_id, final_status.upper(), result=result)
-        self._report_completion(task_id, execution_id, result)
+        if not completion_reported:
+            self._publish_execution(execution_id, final_status.upper(), result=result)
+            self._report_completion(task_id, execution_id, result)
         with self.lock:
             queued_charge = self._queued_auto_charge if self.executions.get(execution_id, {}).get("low_battery_preempt_requested") else None
             if queued_charge is not None:
@@ -701,12 +691,12 @@ class WorkflowEngine:
         except OSError as exc:
             self.context.update_metadata(execution_callback_error=str(exc))
 
-    def _report_completion(self, job_id: Any, execution_id: str, result: Dict[str, Any]) -> None:
+    def _report_completion(self, job_id: Any, execution_id: str, result: Dict[str, Any]) -> bool:
         base_url = str(
             os.getenv("LIBOT_BACKEND_URL") or self.context.get("backend_base_url") or ""
         ).strip().rstrip("/")
         if not base_url or not job_id:
-            return
+            return False
         body = json.dumps({
             "status": "CANCELLED" if result.get("status") == "cancelled" else "SUCCEEDED" if result.get("status") == "ok" else "FAILED",
             "executionId": execution_id,
@@ -722,8 +712,10 @@ class WorkflowEngine:
         try:
             with request.urlopen(callback, timeout=10):
                 pass
+            return True
         except OSError as exc:
             self.context.update_metadata(completion_callback_error=str(exc))
+            return False
 
     def _is_cancelled(self, execution_id: str) -> bool:
         with self.lock:
