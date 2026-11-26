@@ -6,10 +6,12 @@ import math
 import os
 import shutil
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib import request
+from urllib.parse import quote
 
 from core.context import RobotContext
 from hardware.barcode_scanner import BarcodeScanner
@@ -423,7 +425,24 @@ class WorkflowEngine:
                 and result.get("status") != "cancelled"):
             result["status"] = "cancelled"
             result["error"] = "LOW_BATTERY: job interrupted at a safe step boundary."
+        if result.get("status") == "ok":
+            self._wait_for_guidance_feedback(execution_id, result)
+            if self._is_cancelled(execution_id) or self._is_low_battery_preempt_requested(execution_id):
+                result["status"] = "cancelled"
+                result["error"] = (
+                    "LOW_BATTERY: job interrupted while waiting for reader feedback."
+                    if self._is_low_battery_preempt_requested(execution_id)
+                    else "Job was cancelled while waiting for reader feedback."
+                )
         self._return_to_wait_point(execution_id, result)
+        if (result.get("status") == "ok"
+                and (self._is_cancelled(execution_id) or self._is_low_battery_preempt_requested(execution_id))):
+            result["status"] = "cancelled"
+            result["error"] = (
+                "LOW_BATTERY: job interrupted while returning to the wait point."
+                if self._is_low_battery_preempt_requested(execution_id)
+                else "Job was cancelled while returning to the wait point."
+            )
         final_status = "cancelled" if result.get("status") == "cancelled" else "completed" if result.get("status") == "ok" else "failed"
         with self.lock:
             self.executions[execution_id] = {
@@ -442,6 +461,81 @@ class WorkflowEngine:
                 self._queued_auto_charge = None
         if queued_charge is not None:
             self._start_workflow(queued_charge, allow_safe_queue=True)
+
+    def _wait_for_guidance_feedback(self, execution_id: str, workflow_result: Dict[str, Any]) -> None:
+        with self.lock:
+            execution = dict(self.executions.get(execution_id, {}))
+        workflow_type = str(execution.get("workflow_type") or "").upper()
+        feedback_routes = {
+            "SEARCH_AND_GUIDE_TO_BOOK": "/api/book-guidance/feedback",
+            "SEARCH_AND_GUIDE_TO_FACILITY": "/api/facility-guidance/feedback",
+        }
+        route = feedback_routes.get(workflow_type)
+        if route is None:
+            return
+        deadline = time.monotonic() + 120.0
+
+        wait_step = {
+            "id": "__wait_for_guidance_feedback",
+            "name": "Wait for reader feedback (up to 2 minutes)",
+            "type": "WAIT",
+        }
+        self._set_current_step(execution_id, wait_step)
+        self._publish_execution(
+            execution_id,
+            "WAITING",
+            result={"message": "Waiting for reader feedback or the 2-minute timeout."},
+        )
+
+        base_url = str(
+            os.getenv("LIBOT_BACKEND_URL") or self.context.get("backend_base_url") or ""
+        ).strip().rstrip("/")
+        job_id = execution.get("job_id") or execution.get("task_id")
+        feedback_url = (
+            f"{base_url}{route}?jobId={quote(str(job_id), safe='')}" if base_url and job_id else None
+        )
+        outcome = "timeout"
+
+        while True:
+            if self._is_cancelled(execution_id) or self._is_low_battery_preempt_requested(execution_id):
+                outcome = "interrupted"
+                break
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            if feedback_url:
+                try:
+                    with request.urlopen(feedback_url, timeout=max(0.1, min(5.0, remaining))) as response:
+                        feedback = json.loads(response.read().decode("utf-8"))
+                    if isinstance(feedback, list) and feedback:
+                        outcome = "feedback_received"
+                        break
+                except (OSError, ValueError, UnicodeError):
+                    # A transient backend error should not shorten the reader's feedback window.
+                    pass
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(2.0, remaining))
+
+        detail = {
+            "status": outcome,
+            "message": (
+                "Reader feedback was received."
+                if outcome == "feedback_received"
+                else "The 2-minute feedback window elapsed."
+                if outcome == "timeout"
+                else "Feedback waiting was interrupted by cancellation or low-battery handling."
+            ),
+        }
+        workflow_result["feedback_wait"] = detail
+        with self.lock:
+            current = self.executions.get(execution_id)
+            if current is not None:
+                current["feedback_wait"] = detail
 
     def _return_to_wait_point(self, execution_id: str, workflow_result: Dict[str, Any]) -> None:
         if workflow_result.get("status") != "ok":
@@ -771,6 +865,9 @@ class WorkflowEngine:
         initial_context = request.get("initial_context", {})
         if not isinstance(initial_context, dict):
             return self._error("initial_context must be an object.")
+        workflow_type = str(
+            request.get("workflow_type") or initial_context.get("workflow_type") or ""
+        ).upper()
         runtime_id = str(request.get("runtime_id", "")).lower()
         if allow_safe_queue and runtime_id != "real":
             return self._error("Automatic charging is available only for the real runtime.")
@@ -821,7 +918,7 @@ class WorkflowEngine:
                     "task_id": request.get("task_id"),
                     "job_id": request.get("job_id", request.get("task_id")),
                     "runtime_id": request.get("runtime_id", self.context.get("runtime_id")),
-                    "workflow_type": request.get("workflow_type"),
+                    "workflow_type": workflow_type,
                     "assigned_book_id": initial_context.get("book_id"),
                     "current_step": None,
                     "current_step_name": None,
