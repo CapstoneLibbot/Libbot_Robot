@@ -96,7 +96,7 @@ controller_server:
       stateful: true
       plugin: nav2_controller::SimpleGoalChecker
       xy_goal_tolerance: 0.05
-      yaw_goal_tolerance: 0.35
+      yaw_goal_tolerance: 0.1
     FollowPath:
       plugin: nav2_mppi_controller::MPPIController
       time_steps: 56
