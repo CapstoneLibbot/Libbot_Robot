@@ -6,12 +6,10 @@ import math
 import os
 import shutil
 import threading
-import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib import request
-from urllib.parse import quote
 
 from core.context import RobotContext
 from hardware.barcode_scanner import BarcodeScanner
@@ -52,6 +50,7 @@ class WorkflowEngine:
         self.executions: Dict[str, Dict[str, Any]] = {}
         self._active_navigation: Optional[MoveStep] = None
         self._queued_auto_charge: Optional[Dict[str, Any]] = None
+        self._idle_wait_events: Dict[str, threading.Event] = {}
 
     def load_default_workflow(self) -> None:
         workflow_steps = self.settings.get("workflow", {}).get("steps", [])
@@ -426,12 +425,16 @@ class WorkflowEngine:
             result["status"] = "cancelled"
             result["error"] = "LOW_BATTERY: job interrupted at a safe step boundary."
         completion_reported = False
+        should_return_to_park = True
         if result.get("status") == "ok":
+            idle_wait_event = self._prepare_for_next_task_wait(execution_id)
             # The configured workflow has finished at the destination. Report that now so
-            # the mobile app can open its feedback screen while the robot waits here.
+            # the mobile app can open its feedback screen before the idle grace period.
             completion_reported = self._report_completion(task_id, execution_id, result)
-            self._wait_for_guidance_feedback(execution_id, result)
-        self._return_to_wait_point(execution_id, result)
+            if idle_wait_event is not None:
+                should_return_to_park = self._wait_for_next_task(execution_id, idle_wait_event, result)
+        if should_return_to_park:
+            self._return_to_wait_point(execution_id, result)
         final_status = "cancelled" if result.get("status") == "cancelled" else "completed" if result.get("status") == "ok" else "failed"
         with self.lock:
             self.executions[execution_id] = {
@@ -452,80 +455,54 @@ class WorkflowEngine:
         if queued_charge is not None:
             self._start_workflow(queued_charge, allow_safe_queue=True)
 
-    def _wait_for_guidance_feedback(self, execution_id: str, workflow_result: Dict[str, Any]) -> None:
+    def _prepare_for_next_task_wait(self, execution_id: str) -> Optional[threading.Event]:
         with self.lock:
-            execution = dict(self.executions.get(execution_id, {}))
-        workflow_type = str(execution.get("workflow_type") or "").upper()
-        feedback_routes = {
-            "SEARCH_AND_GUIDE_TO_BOOK": "/api/book-guidance/feedback",
-            "SEARCH_AND_GUIDE_TO_FACILITY": "/api/facility-guidance/feedback",
-        }
-        route = feedback_routes.get(workflow_type)
-        if route is None:
-            return
-        deadline = time.monotonic() + 120.0
+            execution = self.executions.get(execution_id)
+            if execution is None:
+                return None
+            runtime_id = str(execution.get("runtime_id") or self.context.get("runtime_id") or "real").lower()
+            workflow_type = str(execution.get("workflow_type") or "").upper()
+            if (
+                runtime_id != "real"
+                or execution.get("is_auto_charge")
+                or workflow_type == "ROBOT_RETURN_AND_CHARGING"
+            ):
+                return None
 
-        wait_step = {
-            "id": "__wait_for_guidance_feedback",
-            "name": "Wait for reader feedback (up to 2 minutes)",
-            "type": "WAIT",
-        }
-        self._set_current_step(execution_id, wait_step)
-        self._publish_execution(
-            execution_id,
-            "WAITING",
-            result={"message": "Waiting for reader feedback or the 2-minute timeout."},
-        )
+            wait_event = threading.Event()
+            execution["status"] = "completed"
+            execution["waiting_for_next_task"] = True
+            self._idle_wait_events[execution_id] = wait_event
+            return wait_event
 
-        base_url = str(
-            os.getenv("LIBOT_BACKEND_URL") or self.context.get("backend_base_url") or ""
-        ).strip().rstrip("/")
-        job_id = execution.get("job_id") or execution.get("task_id")
-        feedback_url = (
-            f"{base_url}{route}?jobId={quote(str(job_id), safe='')}" if base_url and job_id else None
-        )
-        outcome = "timeout"
+    def _wait_for_next_task(
+        self,
+        execution_id: str,
+        wait_event: threading.Event,
+        workflow_result: Dict[str, Any],
+    ) -> bool:
+        wait_event.wait(timeout=120.0)
 
-        while True:
-            if self._is_cancelled(execution_id) or self._is_low_battery_preempt_requested(execution_id):
-                outcome = "interrupted"
-                break
+        with self.lock:
+            task_received = wait_event.is_set()
+            if self._idle_wait_events.get(execution_id) is wait_event:
+                self._idle_wait_events.pop(execution_id, None)
+            execution = self.executions.get(execution_id)
+            if execution is not None:
+                execution["waiting_for_next_task"] = False
+                # Reserve the robot for the PARK trip atomically with closing the task window.
+                if not task_received and execution.get("status") == "completed":
+                    execution["status"] = "running"
 
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-
-            if feedback_url:
-                try:
-                    with request.urlopen(feedback_url, timeout=max(0.1, min(5.0, remaining))) as response:
-                        feedback = json.loads(response.read().decode("utf-8"))
-                    if isinstance(feedback, list) and feedback:
-                        outcome = "feedback_received"
-                        break
-                except (OSError, ValueError, UnicodeError):
-                    # A transient backend error should not shorten the reader's feedback window.
-                    pass
-
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            time.sleep(min(2.0, remaining))
-
-        detail = {
-            "status": outcome,
+        workflow_result["next_task_wait"] = {
+            "status": "new_task_received" if task_received else "timeout",
             "message": (
-                "Reader feedback was received."
-                if outcome == "feedback_received"
-                else "The 2-minute feedback window elapsed."
-                if outcome == "timeout"
-                else "Feedback waiting was interrupted by cancellation or low-battery handling."
+                "A new task arrived; the robot will stay available for it."
+                if task_received
+                else "No new task arrived in 2 minutes; the robot will return to PARK."
             ),
         }
-        workflow_result["feedback_wait"] = detail
-        with self.lock:
-            current = self.executions.get(execution_id)
-            if current is not None:
-                current["feedback_wait"] = detail
+        return not task_received
 
     def _return_to_wait_point(self, execution_id: str, workflow_result: Dict[str, Any]) -> None:
         if workflow_result.get("status") != "ok":
@@ -545,18 +522,18 @@ class WorkflowEngine:
                 if current is not None:
                     current["return_to_wait_point"] = detail
                     current["last_error"] = message
-            print(f"Could not return to the wait point: {message}", flush=True)
+            print(f"Could not return to PARK: {message}", flush=True)
 
         if self._is_cancelled(execution_id) or self._is_low_battery_preempt_requested(execution_id):
             record_skip("Return was preempted by cancellation or low-battery handling.")
             return
 
-        get_wait_endpoint = getattr(self.runtime_gateway, "get_wait_endpoint", None)
-        if not callable(get_wait_endpoint):
-            record_skip("Runtime gateway cannot resolve a wait point.")
+        get_park_endpoint = getattr(self.runtime_gateway, "get_park_endpoint", None)
+        if not callable(get_park_endpoint):
+            record_skip("Runtime gateway cannot resolve a PARK point.")
             return
         try:
-            target = get_wait_endpoint()
+            target = get_park_endpoint()
         except Exception as exc:
             record_skip(str(exc))
             return
@@ -567,7 +544,7 @@ class WorkflowEngine:
 
         step_def = {
             "id": "__return_to_wait_point",
-            "name": "Return to wait point",
+            "name": "Return to PARK",
             "type": "MOVE",
             "params": {
                 "target": {key: target[key] for key in ("x", "y", "theta", "endpoint_id")},
@@ -599,7 +576,7 @@ class WorkflowEngine:
         succeeded = self._step_succeeded(step_result, step_def)
         step_detail = step_result.get("result", {})
         error = None if succeeded else str(
-            step_detail.get("message") or step_detail.get("error") or "Could not reach the wait point."
+            step_detail.get("message") or step_detail.get("error") or "Could not reach the PARK point."
         )
         detail = {
             "status": "completed" if succeeded else "failed",
@@ -875,6 +852,9 @@ class WorkflowEngine:
 
         queued = False
         with self.lock:
+            for idle_wait_event in self._idle_wait_events.values():
+                idle_wait_event.set()
+
             active = next(
                 ((active_id, item) for active_id, item in self.executions.items()
                  if item.get("status") in {"accepted", "running"}),
