@@ -162,7 +162,8 @@ class BarcodeScanner:
 
             camera = Picamera2()
             camera.configure(camera.create_preview_configuration(
-                main={"size": (1280, 720), "format": "RGB888"}
+                # Picamera2's RGB888 array is BGR-ordered; BGR888 yields RGB bytes for Pillow.
+                main={"size": (1280, 720), "format": "BGR888"}
             ))
             camera.start()
             deadline = started_at + max(timeout_sec, 0.0)

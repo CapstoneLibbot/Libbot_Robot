@@ -255,7 +255,8 @@ class CameraFrames:
                     self._patrol_model_error = str(exc)
             camera = Picamera2(cameras[0][0])
             camera.configure(camera.create_preview_configuration(
-                main={"size": (self.width, self.height), "format": "RGB888"}
+                # Picamera2's RGB888 array is BGR-ordered; BGR888 yields RGB bytes for Pillow.
+                main={"size": (self.width, self.height), "format": "BGR888"}
             ))
             if imx500 is not None:
                 try:
