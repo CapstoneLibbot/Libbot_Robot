@@ -414,6 +414,8 @@ class MoveStep(BaseStep):
         }
         if patrol_detector_error:
             result["patrol_detection_error"] = patrol_detector_error
-        if message:
+            result["status"] = "error"
+            result["message"] = patrol_detector_error
+        if message and not patrol_detector_error:
             result["message"] = message
         return result
