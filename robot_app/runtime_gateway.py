@@ -8,6 +8,7 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -135,6 +136,7 @@ class RobotRuntimeGateway:
         self._localization_condition = threading.Condition(self._lock)
         self._amcl_samples: deque[Dict[str, Any]] = deque(maxlen=self.AMCL_MIN_STABLE_SAMPLES)
         self._last_scan_monotonic: Optional[float] = None
+        self._last_odom_monotonic: Optional[float] = None
         self._last_scan_ros_stamp_ns: Optional[int] = None
         self._localization_attempt_start_stamp_ns = 0
         self._localization_attempt_id = 0
@@ -713,6 +715,74 @@ class RobotRuntimeGateway:
             body = response.read().decode("utf-8").strip()
             return json.loads(body) if body else None
 
+    def get_wait_endpoint(self) -> Dict[str, Any]:
+        """Resolve the active map's explicit WAIT endpoint or its unique PARK endpoint."""
+        return self._resolve_wait_endpoint(park_only=False)
+
+    def get_park_endpoint(self) -> Dict[str, Any]:
+        """Resolve the active map's unique endpoint whose type is PARK."""
+        return self._resolve_wait_endpoint(park_only=True)
+
+    def _resolve_wait_endpoint(self, park_only: bool) -> Dict[str, Any]:
+        with self._lock:
+            map_id = self._active_map_id
+        if not map_id:
+            raise ValueError("The active map is unavailable; cannot resolve a PARK point.")
+
+        endpoints = self._get_backend_json(
+            f"{self.backend_url}/api/maps/{map_id}/endpoints"
+        )
+        if not isinstance(endpoints, list):
+            raise ValueError("The active map endpoint response is invalid.")
+
+        active: list[Dict[str, Any]] = []
+        for endpoint in endpoints:
+            if not isinstance(endpoint, dict):
+                continue
+            endpoint_map_id = endpoint.get("mapId", endpoint.get("map_id"))
+            if (str(endpoint_map_id or "").casefold() != str(map_id).casefold()
+                    or endpoint.get("isActive", endpoint.get("is_active")) is not True):
+                continue
+            active.append(endpoint)
+
+        def normalized_name(endpoint: Dict[str, Any]) -> str:
+            return " ".join(str(endpoint.get("name", "")).casefold().replace("_", " ")
+                            .replace("-", " ").split())
+
+        park_endpoints = [endpoint for endpoint in active
+                          if (str(endpoint.get("endpointType", endpoint.get("endpoint_type", "")))
+                              .strip().upper() == "PARK"
+                              or normalized_name(endpoint) == "park")]
+        if park_only:
+            candidates = park_endpoints
+        else:
+            named_wait = [endpoint for endpoint in active
+                          if normalized_name(endpoint) in {"wait", "wait point", "waiting point"}]
+            if len(named_wait) > 1:
+                raise ValueError("The active map has multiple active endpoints named as a wait point.")
+            candidates = named_wait or park_endpoints
+        if len(candidates) != 1:
+            if not candidates:
+                raise ValueError("The active map has no active PARK endpoint." if park_only else
+                                 "The active map has no active WAIT-named or PARK endpoint.")
+            raise ValueError("The active map has multiple active PARK endpoints; keep only one.")
+
+        endpoint = candidates[0]
+        try:
+            target = {
+                "x": float(endpoint.get("positionX", endpoint.get("position_x"))),
+                "y": float(endpoint.get("positionY", endpoint.get("position_y"))),
+                "theta": float(endpoint.get("theta", 0.0)),
+                "endpoint_id": str(endpoint.get("id", "")),
+            }
+        except (TypeError, ValueError) as exc:
+            raise ValueError("The active map PARK endpoint has invalid coordinates.") from exc
+        if not all(math.isfinite(target[key]) for key in ("x", "y", "theta")) or not target["endpoint_id"]:
+            raise ValueError("The active map PARK endpoint has invalid coordinates or ID.")
+        target["name"] = str(endpoint.get("name") or ("PARK" if park_only else "Wait point"))
+        target["map_id"] = str(map_id)
+        return target
+
     @staticmethod
     def _grid_from_saved_map(saved: Any) -> Dict[str, Any]:
         if not isinstance(saved, dict):
@@ -834,14 +904,37 @@ class RobotRuntimeGateway:
     ) -> Dict[str, Any]:
         if self._mapping_process is not None and self._mapping_process.poll() is None:
             return self._failure("Stop SLAM mapping before starting Nav2.")
-        path = Path(map_path).resolve()
-        if (
-            not path.is_absolute()
-            or path.suffix.lower() != ".yaml"
-            or self.maps_dir not in path.parents
-            or not path.is_file()
-        ):
+        requested_path = Path(map_path)
+        if not requested_path.is_absolute() or requested_path.suffix.lower() != ".yaml":
             return self._failure("The selected map YAML is not available on the robot.")
+        path = requested_path.resolve()
+        if self.maps_dir not in path.parents:
+            return self._failure("The selected map YAML is not available on the robot.")
+        if not path.is_file():
+            if not map_id:
+                return self._failure(f"The selected map YAML is missing on the robot: {path}.")
+            try:
+                saved_map_id = str(uuid.UUID(map_id))
+                saved_map = self._get_backend_json(
+                    f"{self.backend_url}/api/maps/{saved_map_id}"
+                )
+                grid = self._grid_from_saved_map(saved_map)
+                restored_path, _ = self._write_grid_files(grid, path.with_suffix(""))
+                if restored_path.resolve() != path or not path.is_file():
+                    raise OSError("restored map files do not match the requested YAML path")
+                print(f"Restored missing navigation map from backend: {path}", flush=True)
+            except (
+                HTTPError,
+                URLError,
+                OSError,
+                ValueError,
+                TypeError,
+                json.JSONDecodeError,
+            ) as exc:
+                return self._failure(
+                    f"The selected map YAML is missing on the robot ({path}); "
+                    f"restoring it from the backend failed: {exc}"
+                )
         if self._navigation_process is not None and self._navigation_process.poll() is None:
             with self._lock:
                 previous_start_failed = self.navigation_mode_state == "ERROR"
@@ -2340,6 +2433,7 @@ class RobotRuntimeGateway:
     def _on_odom(self, message: Any) -> None:
         twist = message.twist.twist
         with self._lock:
+            self._last_odom_monotonic = time.monotonic()
             self.twist = {
                 "linearX": float(twist.linear.x),
                 "linearY": float(twist.linear.y),

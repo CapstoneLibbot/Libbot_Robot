@@ -33,6 +33,9 @@ that the map server is publishing `/map` and the gateway can reach the backend.
 This repository contains the **Client Application** running on the robot's **Raspberry Pi**. Instead of having hardcoded behaviors, the robot acts as a **Dynamic Workflow Engine**[cite: 2]. It maintains a TCP socket connection with a centralized **.NET Backend**[cite: 1]. The backend sends workflow configurations (JSON payloads) dynamically, and the robot executes them step-by-step, managing runtime variables and hardware interfaces autonomously.
 
 ## 🏗️ System Architecture
+
+After a successful physical workflow, the robot returns to the active map's wait point. Configure one active endpoint named `WAIT`/`WAIT POINT`, or one active endpoint of type `PARK`. A named wait endpoint takes precedence. Failed, cancelled, simulated, and charger workflows do not trigger this return.
+
 1. **TCP Communication Layer:** Listens to incoming workflow jobs from the .NET server[cite: 1].
 2. **Workflow Engine:** Parses the JSON array of steps, manages state (Context), handles branching logic (IF/ELSE), and executes the tasks[cite: 2].
 3. **Hardware Abstraction Layer (HAL):** Connects the software logic to physical components like ROS/Nav2 (Navigation), Cameras (Barcode/RFID scanning), Speakers (TTS), and Touch Displays.

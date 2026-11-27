@@ -1,3 +1,4 @@
+cat > scripts/install_imx500_camera_service.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -26,9 +27,13 @@ if [[ "${service_user}" == "root" ]]; then
 fi
 
 apt-get update
-apt-get install -y python3-picamera2 python3-pil python3-pyzbar libzbar0 openssl
+apt-get install -y imx500-all imx500-tools python3-picamera2 python3-pil python3-venv libzbar0 openssl
 
 install -d -m 0755 /etc/libot /usr/local/lib/libot
+python_venv="/usr/local/lib/libot/imx500-venv"
+python3 -m venv --system-site-packages "${python_venv}"
+"${python_venv}/bin/python" -m pip install --disable-pip-version-check --no-deps "pyzbar==0.1.9"
+
 environment_file="/etc/libot/imx500-camera.env"
 if [[ ! -f "${environment_file}" ]]; then
   stream_token="$(openssl rand -hex 32)"
@@ -42,15 +47,16 @@ launcher="/usr/local/lib/libot/start-imx500-camera.sh"
 {
   printf '#!/usr/bin/env bash\nset -euo pipefail\n'
   printf 'repo_root=%q\n' "${repo_root}"
+  printf 'python_venv=%q\n' "${python_venv}"
   printf 'export PYTHONPATH="${repo_root}/robot_app${PYTHONPATH:+:${PYTHONPATH}}"\n'
   printf 'cd "${repo_root}"\n'
-  printf 'exec /usr/bin/python3 "${repo_root}/robot_app/hardware/imx500_scanner_server.py" --host 127.0.0.1 --port 9011 --stream-host 0.0.0.0 --stream-port 9012\n'
+  printf 'exec "${python_venv}/bin/python" "${repo_root}/robot_app/hardware/imx500_scanner_server.py" --host 127.0.0.1 --port 9011 --stream-host 0.0.0.0 --stream-port 9012\n'
 } > "${launcher}"
 chmod 0755 "${launcher}"
 chown root:root "${launcher}"
 
 unit_file="/etc/systemd/system/libot-imx500-camera.service"
-cat > "${unit_file}" <<EOF
+cat > "${unit_file}" <<EOF_UNIT
 [Unit]
 Description=LiBot IMX500 QR scanner and camera stream
 After=network-online.target
@@ -69,10 +75,14 @@ TimeoutStopSec=10
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOF_UNIT
 chmod 0644 "${unit_file}"
 chown root:root "${unit_file}"
 
 systemctl daemon-reload
 systemctl enable --now libot-imx500-camera.service
 echo "IMX500 scanner is enabled at boot. SCAN steps start camera capture automatically."
+EOF
+
+chmod +x scripts/install_imx500_camera_service.sh
+sudo bash scripts/install_imx500_camera_service.sh

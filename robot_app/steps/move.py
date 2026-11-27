@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import time
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 from core.context import RobotContext
@@ -16,6 +18,7 @@ class MoveStep(BaseStep):
     SPEED_MODES = {"NORMAL", "SLOW_GUIDE", "PATROL"}
     OBSTACLE_POLICIES = {"WAIT_RESUME", "REROUTE", "DETECT_AND_WAIT"}
     OBSTACLE_POLICY_ALIASES = {"WAIT": "WAIT_RESUME"}
+    INVENTORY_TARGET_SEGMENT_M = 0.15
 
     def __init__(self, config: Optional[Dict[str, Any]] = None):
         super().__init__(config)
@@ -29,6 +32,57 @@ class MoveStep(BaseStep):
         self.navigation = NavigationController()
         self.zone_action_checker = self.config.get("_zone_action_checker")
         self.runtime_gateway = self.config.get("_runtime_gateway")
+        self.shelf_motion = None
+        if self.config.get("_inventory_shelf_scan"):
+            from hardware.shelf_motion import ShelfMotionController
+            self.shelf_motion = ShelfMotionController(self.runtime_gateway, self.config.get("_inventory_scan_settings"))
+
+    def stop(self) -> None:
+        self.navigation.stop()
+        if self.shelf_motion is not None:
+            self.shelf_motion.stop()
+
+    def _move_inventory_segment(self, context: RobotContext) -> Dict[str, Any]:
+        started_at = time.monotonic()
+        target = None
+        try:
+            start, end = context.get("inventory_scan_start"), context.get("inventory_scan_end")
+            segments = int(context.get("inventory_scan_segments") or 0)
+            index = int(context.get("inventory_scan_index") or 0)
+            if not isinstance(start, dict) or not isinstance(end, dict) or not 0 <= index < segments <= 1000:
+                raise ValueError("Inventory scan segment state is invalid.")
+            length = math.hypot(end["x"] - start["x"], end["y"] - start["y"])
+            if not math.isfinite(length) or length <= 0:
+                raise ValueError("Inventory scan endpoint distance is invalid.")
+            fraction = min((index + 1) * self.INVENTORY_TARGET_SEGMENT_M / length, 1.0)
+            if index + 1 == segments:
+                fraction = 1.0
+            target = {"x": start["x"] + (end["x"] - start["x"]) * fraction,
+                      "y": start["y"] + (end["y"] - start["y"]) * fraction,
+                      "theta": start["theta"]}
+            initial_pose = self.runtime_gateway._lookup_map_pose()
+            if not initial_pose:
+                raise RuntimeError("Robot pose unavailable before inventory movement.")
+            self.shelf_motion.move_to(target, context)
+            self.shelf_motion.wait_stopped(context)
+            actual_pose = self.runtime_gateway._lookup_map_pose()
+            if not actual_pose:
+                raise RuntimeError("Robot pose unavailable after inventory movement.")
+            context.set("inventory_scan_index", index + 1)
+            context.set("inventory_scan_complete", index + 1 == segments)
+            context.set("current_pose", actual_pose)
+            context.set("move_status", "COMPLETED")
+            displacement = math.hypot(actual_pose["x"] - initial_pose["x"], actual_pose["y"] - initial_pose["y"])
+            return {"status": "ok", "type": "MOVE", "move_status": "COMPLETED", "target": target,
+                    "final_pose": actual_pose, "start_pose": initial_pose, "actual_displacement_m": displacement,
+                    "segment_index": index + 1, "segment_count": segments}
+        except (ValueError, TypeError, KeyError, RuntimeError, OSError, ImportError) as exc:
+            self.stop()
+            return self._error_payload(
+                context, str(exc), error_code="SHELF_MOTION_FAILED" if target else "INVALID_INPUT",
+                target=target, nav2_result_code=None,
+                duration_ms=int((time.monotonic() - started_at) * 1000),
+            )
 
     def _normalize_enum(self, value: Any, default: str) -> str:
         if value is None:
@@ -180,7 +234,9 @@ class MoveStep(BaseStep):
             )
         return None
 
-    def _error_payload(self, context: RobotContext, message: str) -> Dict[str, Any]:
+    def _error_payload(self, context: RobotContext, message: str, *, error_code: str = "INVALID_INPUT",
+                       target: Any = None, nav2_result_code: Any = "INVALID_INPUT",
+                       duration_ms: int = 0) -> Dict[str, Any]:
         current_pose = context.get("current_pose", {"x": 0.0, "y": 0.0, "theta": 0.0})
         context.set("move_status", "FAILED")
         return {
@@ -188,10 +244,11 @@ class MoveStep(BaseStep):
             "type": "MOVE",
             "move_status": "FAILED",
             "message": message,
-            "target": None,
+            "target": target,
             "final_pose": None,
-            "nav2_result_code": "INVALID_INPUT",
-            "duration_ms": 0,
+            "nav2_result_code": nav2_result_code,
+            "error_code": error_code,
+            "duration_ms": duration_ms,
             "obstacle_info": None,
             "speed_mode": self.speed_mode,
             "obstacle_policy": self.obstacle_policy,
@@ -203,12 +260,39 @@ class MoveStep(BaseStep):
         }
 
     def execute(self, context: RobotContext) -> Any:
+        started_at = time.monotonic()
+        if self.config.get("movement_mode") == "SHELF_SCAN":
+            return self._move_inventory_segment(context)
         current_pose = context.get("current_pose", {"x": 0.0, "y": 0.0, "theta": 0.0})
         validation_error = self._validate_navigation_options()
         if validation_error is not None:
             return self._error_payload(context, validation_error)
 
-        resolved_goal, goal_error = self._resolve_goal(context)
+        if self.config.get("_inventory_shelf_scan"):
+            try:
+                from steps.inventory_navigation import resolve_shelf_endpoints
+                start, end = resolve_shelf_endpoints(context, self.runtime_gateway)
+                if end is None:
+                    segments = 0
+                    scan_complete = True
+                else:
+                    distance = math.hypot(end["x"] - start["x"], end["y"] - start["y"])
+                    segments = math.ceil(distance / self.INVENTORY_TARGET_SEGMENT_M - 1e-9)
+                    if not 1 <= segments <= 1000:
+                        raise ValueError("Inventory shelf must require between 1 and 1000 scan segments.")
+                    scan_complete = False
+                context.set("inventory_scan_start", start)
+                context.set("inventory_scan_end", end)
+                context.set("inventory_scan_segments", segments)
+                context.set("inventory_scan_index", 0)
+                context.set("inventory_scan_complete", scan_complete)
+                context.set("inventory_scanned_items", [])
+                context.set("scanned_items", [])
+                resolved_goal, goal_error = {"target": start, "path_id": None}, None
+            except (OSError, KeyError, TypeError, ValueError) as exc:
+                return self._error_payload(context, str(exc))
+        else:
+            resolved_goal, goal_error = self._resolve_goal(context)
         if goal_error is not None or resolved_goal is None:
             return self._error_payload(context, goal_error or "Invalid navigation goal.")
 
@@ -233,6 +317,27 @@ class MoveStep(BaseStep):
             "current_pose": current_pose,
         }
         capture_started = False
+        patrol_reporter = None
+        patrol_detector_error = None
+        detector_config = self.config.get("_patrol_detector")
+        if self.scan_while_moving and isinstance(detector_config, dict) \
+                and str(context.get("runtime_id", "real")).lower() == "real" \
+                and resolved_goal.get("path_id"):
+            try:
+                from hardware.patrol_detection import PatrolDetectionReporter
+                patrol_reporter = PatrolDetectionReporter(
+                    scanner_device=str(detector_config.get("device") or ""),
+                    backend_base_url=str(context.get("backend_base_url") or ""),
+                    job_id=str(context.get("job_id") or context.get("task_id") or ""),
+                    execution_id=str(context.get("execution_id") or ""),
+                    path_id=str(resolved_goal.get("path_id")),
+                    waypoint=requested_target,
+                    threshold=float(detector_config.get("threshold", 0.70)),
+                )
+                if not patrol_reporter.start():
+                    patrol_detector_error = patrol_reporter.last_error
+            except Exception as exc:
+                patrol_detector_error = f"Could not start patrol leaning-book detection: {exc}"
         if self.scan_while_moving and self.runtime_gateway is not None:
             begin_capture = getattr(self.runtime_gateway, "begin_patrol_capture", None)
             if callable(begin_capture):
@@ -242,12 +347,38 @@ class MoveStep(BaseStep):
             nav_result = self.navigation.navigate(goal)
         finally:
             capture = {"observations": [], "actual_distance_m": 0.0}
+            if patrol_reporter is not None:
+                patrol_reporter.stop()
+                patrol_detector_error = patrol_reporter.last_error or patrol_detector_error
             if capture_started:
                 finish_capture = getattr(self.runtime_gateway, "finish_patrol_capture", None)
                 if callable(finish_capture):
                     capture = finish_capture()
 
         move_status = nav_result.get("move_status", "FAILED")
+        if move_status == "COMPLETED" and self.config.get("_inventory_shelf_scan"):
+            try:
+                pose = self.runtime_gateway._lookup_map_pose()
+                if not pose or math.hypot(pose["x"] - start["x"], pose["y"] - start["y"]) > 0.08:
+                    raise ValueError("Robot did not reach the scan start within 8 cm.")
+                heading = float(pose.get("yaw", pose.get("theta", 0))) - start["theta"]
+                if abs(math.atan2(math.sin(heading), math.cos(heading))) > 0.45:
+                    raise ValueError("Robot is not aligned with the shelf.")
+                self.shelf_motion.move_to(start, context)
+                self.shelf_motion.wait_stopped(context)
+            except (ValueError, TypeError, KeyError, RuntimeError, OSError, ImportError) as exc:
+                self.stop()
+                try:
+                    current = self.runtime_gateway._lookup_map_pose()
+                    if current:
+                        context.set("current_pose", current)
+                except Exception:
+                    pass
+                return self._error_payload(
+                    context, str(exc), error_code="SHELF_ALIGNMENT_FAILED",
+                    target=requested_target, nav2_result_code=nav_result.get("nav2_result_code"),
+                    duration_ms=int((time.monotonic() - started_at) * 1000),
+                )
         final_pose = nav_result.get("final_pose")
         if final_pose is None and self.runtime_gateway is not None:
             final_pose = dict(getattr(self.runtime_gateway, "pose", {}) or {}) or None
@@ -281,6 +412,8 @@ class MoveStep(BaseStep):
             "observations": capture.get("observations", []),
             "actual_distance_m": float(capture.get("actual_distance_m", 0.0) or 0.0),
         }
+        if patrol_detector_error:
+            result["patrol_detection_error"] = patrol_detector_error
         if message:
             result["message"] = message
         return result

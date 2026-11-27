@@ -21,6 +21,7 @@ class ScanStep(BaseStep):
         self.context_key = self.config.get("context_key", "scan_input")
         self.output_key = self.config.get("output_key", "scanned_code")
         self.expected_prefix = self.config.get("expected_prefix")
+        self.expected_value = self.config.get("expected_value")
         scanner_settings = {
             "device": self.config.get("device", self.sensor),
             "mock_value": self.config.get("mock_value"),
@@ -29,8 +30,35 @@ class ScanStep(BaseStep):
             "quiet_period_sec": self.config.get("quiet_period_sec", 0.75),
         }
         self.scanner = BarcodeScanner(scanner_settings)
-
     def execute(self, context: RobotContext) -> Any:
+        if not self.config.get("_inventory_shelf_scan"):
+            return self._scan_once(context)
+        if context.get("workflow_cancelled") or context.get("low_battery_preempt_requested"):
+            return {"status": "error", "type": "SCAN", "scan_status": "FAILED", "message": "Inventory scan cancelled."}
+        result = self._scan_once(context)
+        if result.get("status") != "scanned":
+            return result
+        previous = context.get("inventory_scanned_items")
+        if not isinstance(previous, list):
+            return {"status": "error", "type": "SCAN", "scan_status": "FAILED", "message": "Inventory scan state is missing."}
+        items = list(previous)
+        seen = {(item["qr_code"].casefold(), item["level_number"]) for item in items}
+        for item in result.get("scanned_items", []):
+            key = (item["qr_code"].casefold(), item["level_number"])
+            if key not in seen:
+                seen.add(key)
+                items.append(item)
+        context.set("inventory_scanned_items", items)
+        if context.get("inventory_scan_complete") and not items:
+            return {"status": "error", "type": "SCAN", "scan_status": "FAILED",
+                    "message": "No books were read across the shelf; inventory cannot be verified safely."}
+        result["scanned_items"] = items
+        result["scanned_count"] = len(items)
+        result["scan_status"] = "COMPLETED" if items else "NO_DATA"
+        context.set("last_scan", result)
+        return result
+
+    def _scan_once(self, context: RobotContext) -> Any:
         started_at = time.monotonic()
         default_queue = "patrol_observation_queue" if self.sensor == "patrol_observation" else "scan_queue"
         queue_key = str(self.config.get("queue_key", default_queue))
@@ -38,7 +66,7 @@ class ScanStep(BaseStep):
         context_value = context.pop_next(queue_key) if runtime_id == "sim" else None
         if runtime_id != "sim" and self.sensor != "patrol_observation":
             # Legacy one-step callers that do not name a runtime may inject an
-            # explicit test/manual value; dispatched missions always set runtime_id.
+            # explicit test/manual value; dispatched jobs always set runtime_id.
             context_value = context.get(self.context_key) if not runtime_id else None
         if context_value is None and self.sensor == "patrol_observation":
             context_value = context.get(self.context_key)
@@ -56,7 +84,12 @@ class ScanStep(BaseStep):
             return self._execute_qr_book_scan(scan_result, context, started_at)
 
         value = scan_result.get("value")
-        validation_error = self._validate(value)
+        expected_value = self.resolve(context, self.expected_value) if self.expected_value is not None else None
+        validation_error = (
+            "Expected scan value could not be resolved."
+            if self.expected_value is not None and expected_value in (None, "")
+            else self._validate(value, expected_value)
+        )
         status = scan_result.get("status", "timeout")
         if validation_error is not None:
             status = "error"
@@ -197,9 +230,11 @@ class ScanStep(BaseStep):
         }
         return payload
 
-    def _validate(self, value: Any) -> Optional[str]:
+    def _validate(self, value: Any, expected_value: Any = None) -> Optional[str]:
         if value in (None, ""):
             return None
+        if expected_value is not None and str(value) != str(expected_value):
+            return "Scanned barcode does not match the selected book."
         if self.expected_prefix and not str(value).startswith(str(self.expected_prefix)):
             return f"Scanned value does not start with expected prefix '{self.expected_prefix}'."
         return None

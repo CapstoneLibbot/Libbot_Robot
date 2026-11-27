@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import math
 import os
 import shutil
@@ -11,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from urllib import request
 
 from core.context import RobotContext
+from hardware.barcode_scanner import BarcodeScanner
 from steps import (
     BaseStep,
     DisplayStep,
@@ -46,8 +48,9 @@ class WorkflowEngine:
         self.steps: List[BaseStep] = []
         self.lock = threading.RLock()
         self.executions: Dict[str, Dict[str, Any]] = {}
-        self._active_navigation: Optional[NavigationController] = None
+        self._active_navigation: Optional[MoveStep] = None
         self._queued_auto_charge: Optional[Dict[str, Any]] = None
+        self._idle_wait_events: Dict[str, threading.Event] = {}
 
     def load_default_workflow(self) -> None:
         workflow_steps = self.settings.get("workflow", {}).get("steps", [])
@@ -97,13 +100,13 @@ class WorkflowEngine:
         step = self.create_step(step_def)
         if isinstance(step, MoveStep):
             with self.lock:
-                self._active_navigation = step.navigation
+                self._active_navigation = step
         try:
             result = step.execute(self.context)
         finally:
             if isinstance(step, MoveStep):
                 with self.lock:
-                    if self._active_navigation is step.navigation:
+                    if self._active_navigation is step:
                         self._active_navigation = None
         if str(step_def.get("type", "")).upper() == "SCAN" and str(configuration.get("sensor", "")).lower() == "patrol_observation":
             self.context.set(str(configuration.get("context_key", "patrol_observation")), None)
@@ -196,6 +199,15 @@ class WorkflowEngine:
         task_id: Any = None,
         execution_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        try:
+            step_defs = self._expand_inventory_workflow(step_defs)
+        except (TypeError, ValueError) as exc:
+            return {"status": "error", "task_id": task_id, "requested_count": len(step_defs),
+                    "completed_count": 0, "failed_step": None, "error": str(exc), "results": []}
+        validation_error = self._validate_steps(step_defs)
+        if validation_error:
+            return {"status": "error", "task_id": task_id, "requested_count": len(step_defs),
+                    "completed_count": 0, "failed_step": None, "error": validation_error, "results": []}
         results = []
         failed_step = None
         failure_message = None
@@ -208,6 +220,7 @@ class WorkflowEngine:
         endpoint_targets = self.context.get("target_endpoints")
         route_factor = len(endpoint_targets) + 2 if isinstance(endpoint_targets, list) else 4
         maximum_steps = max(len(step_defs) * min(max(route_factor, 4), 502), 1)
+        budgeted_shelves = set()
 
         while 0 <= index < len(step_defs) and visited < maximum_steps:
             if execution_id is not None and (
@@ -238,6 +251,12 @@ class WorkflowEngine:
             results.append(step_result)
             visited += 1
             succeeded = self._step_succeeded(step_result, step_def)
+            if succeeded and step_def.get("name") == "MOVE_TO_INVENTORY_SHELF" and self.context.get("inventory_scan_segments"):
+                shelf = self.context.get("current_shelf") or {}
+                shelf_id = str(shelf.get("shelf_id", ""))
+                if shelf_id and shelf_id not in budgeted_shelves:
+                    budgeted_shelves.add(shelf_id)
+                    maximum_steps += 3 * int(self.context.get("inventory_scan_segments")) + 15
             if execution_id is not None:
                 with self.lock:
                     execution = self.executions.get(execution_id)
@@ -261,8 +280,8 @@ class WorkflowEngine:
 
             if str(step_result.get("step_type", "")).upper() == "END":
                 if step_result.get("result", {}).get("workflow_status") != "SUCCEEDED":
-                    failed_step = step_result.get("step")
-                    failure_message = step_result.get("result", {}).get("message") or "Workflow ended with a failure status."
+                    failed_step = failed_step or step_result.get("step")
+                    failure_message = failure_message or step_result.get("result", {}).get("message") or "Workflow ended with a failure status."
                 break
 
             next_id = self._next_step_id(step_def, step_result, succeeded)
@@ -300,9 +319,53 @@ class WorkflowEngine:
             "requested_count": len(step_defs),
             "completed_count": len(results),
             "failed_step": failed_step,
-            "error": "LOW_BATTERY: mission interrupted at a safe step boundary." if low_battery_preempted else failure_message,
+            "error": "LOW_BATTERY: job interrupted at a safe step boundary." if low_battery_preempted else failure_message,
             "results": results,
         }
+
+    @staticmethod
+    def _expand_inventory_workflow(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Expand the backend's inventory scan into actual robot-side steps."""
+        expanded = copy.deepcopy(steps)
+        scan = next((s for s in expanded if isinstance(s, dict) and
+                     s.get("name") == "SCAN_QR_ON_BOTH_SHELF_LEVELS" and s.get("type") == "SCAN"), None)
+        move = next((s for s in expanded if isinstance(s, dict) and
+                     s.get("name") == "MOVE_TO_INVENTORY_SHELF" and s.get("type") == "MOVE"), None)
+        if scan is None or move is None or not isinstance(scan.get("params"), dict):
+            return expanded
+        move_params = move.get("params") if isinstance(move.get("params"), dict) else move
+        scan_params = scan.get("params") if isinstance(scan.get("params"), dict) else scan
+        shelf_scan_enabled = (
+            bool(move_params.get("_inventory_shelf_scan"))
+            or move_params.get("movement_mode") == "SHELF_SCAN"
+            or bool(scan_params.get("_inventory_shelf_scan"))
+        )
+        if not shelf_scan_enabled:
+            return expanded
+        if (move.get("transitions") or {}).get("on_success") != scan.get("id"):
+            raise ValueError("Inventory MOVE must transition to the inventory SCAN.")
+        transitions = scan.get("transitions") or {}
+        verify_id, error_id = transitions.get("on_success"), transitions.get("on_error")
+        if not verify_id or not error_id:
+            raise ValueError("Inventory SCAN must specify success and error transitions.")
+        existing = {str(s.get("id")) for s in expanded}
+        prefix = "__inventory_scan"
+        while any(f"{prefix}_{suffix}" in existing for suffix in ("move", "scan", "evaluate")):
+            prefix += "_"
+        move_id, scan_id, evaluate_id = (f"{prefix}_{suffix}" for suffix in ("move", "scan", "evaluate"))
+        scan["params"]["_inventory_shelf_scan"] = True
+        scan["transitions"]["on_success"] = evaluate_id
+        repeated_scan = copy.deepcopy(scan)
+        repeated_scan.update(id=scan_id, name="SCAN_INVENTORY_POSITION")
+        repeated_scan["transitions"]["on_success"] = evaluate_id
+        lateral = {"id": move_id, "type": "MOVE", "name": "MOVE_ALONG_INVENTORY_SHELF",
+                   "params": {"movement_mode": "SHELF_SCAN"}, "output_mapping": {},
+                   "transitions": {"on_success": scan_id, "on_error": error_id, "on_timeout": error_id}, "policy": {}}
+        evaluate = {"id": evaluate_id, "type": "EVALUATE", "name": "CHECK_INVENTORY_SHELF_END",
+                    "params": {"left": "${inventory_scan_complete}", "operator": "EQUAL", "right": True},
+                    "output_mapping": {}, "transitions": {"on_true": verify_id, "on_false": move_id, "on_error": error_id}, "policy": {}}
+        expanded.extend([lateral, repeated_scan, evaluate])
+        return expanded
 
     def _next_step_id(
         self,
@@ -345,7 +408,7 @@ class WorkflowEngine:
                 **execution,
                 "status": "cancelled" if cancelled_before_start else "running",
                 "task_id": task_id,
-                "mission_id": task_id,
+                "job_id": task_id,
                 "runtime_id": execution.get("runtime_id") or self.context.get("runtime_id"),
                 "current_step": None,
                 "current_step_name": None,
@@ -360,7 +423,18 @@ class WorkflowEngine:
                 and self._is_low_battery_preempt_requested(execution_id)
                 and result.get("status") != "cancelled"):
             result["status"] = "cancelled"
-            result["error"] = "LOW_BATTERY: mission interrupted at a safe step boundary."
+            result["error"] = "LOW_BATTERY: job interrupted at a safe step boundary."
+        completion_reported = False
+        should_return_to_park = True
+        if result.get("status") == "ok":
+            idle_wait_event = self._prepare_for_next_task_wait(execution_id)
+            # The configured workflow has finished at the destination. Report that now so
+            # the mobile app can open its feedback screen before the idle grace period.
+            completion_reported = self._report_completion(task_id, execution_id, result)
+            if idle_wait_event is not None:
+                should_return_to_park = self._wait_for_next_task(execution_id, idle_wait_event, result)
+        if should_return_to_park:
+            self._return_to_wait_point(execution_id, result)
         final_status = "cancelled" if result.get("status") == "cancelled" else "completed" if result.get("status") == "ok" else "failed"
         with self.lock:
             self.executions[execution_id] = {
@@ -371,14 +445,162 @@ class WorkflowEngine:
                 "allowed_values": [],
                 "result": result,
             }
-        self._publish_execution(execution_id, final_status.upper(), result=result)
-        self._report_completion(task_id, execution_id, result)
+        if not completion_reported:
+            self._publish_execution(execution_id, final_status.upper(), result=result)
+            self._report_completion(task_id, execution_id, result)
         with self.lock:
             queued_charge = self._queued_auto_charge if self.executions.get(execution_id, {}).get("low_battery_preempt_requested") else None
             if queued_charge is not None:
                 self._queued_auto_charge = None
         if queued_charge is not None:
             self._start_workflow(queued_charge, allow_safe_queue=True)
+
+    def _prepare_for_next_task_wait(self, execution_id: str) -> Optional[threading.Event]:
+        with self.lock:
+            execution = self.executions.get(execution_id)
+            if execution is None:
+                return None
+            runtime_id = str(execution.get("runtime_id") or self.context.get("runtime_id") or "real").lower()
+            workflow_type = str(execution.get("workflow_type") or "").upper()
+            if (
+                runtime_id != "real"
+                or execution.get("is_auto_charge")
+                or workflow_type == "ROBOT_RETURN_AND_CHARGING"
+            ):
+                return None
+
+            wait_event = threading.Event()
+            execution["status"] = "completed"
+            execution["waiting_for_next_task"] = True
+            self._idle_wait_events[execution_id] = wait_event
+            return wait_event
+
+    def _wait_for_next_task(
+        self,
+        execution_id: str,
+        wait_event: threading.Event,
+        workflow_result: Dict[str, Any],
+    ) -> bool:
+        wait_event.wait(timeout=120.0)
+
+        with self.lock:
+            task_received = wait_event.is_set()
+            if self._idle_wait_events.get(execution_id) is wait_event:
+                self._idle_wait_events.pop(execution_id, None)
+            execution = self.executions.get(execution_id)
+            if execution is not None:
+                execution["waiting_for_next_task"] = False
+                # Reserve the robot for the PARK trip atomically with closing the task window.
+                if not task_received and execution.get("status") == "completed":
+                    execution["status"] = "running"
+
+        workflow_result["next_task_wait"] = {
+            "status": "new_task_received" if task_received else "timeout",
+            "message": (
+                "A new task arrived; the robot will stay available for it."
+                if task_received
+                else "No new task arrived in 2 minutes; the robot will return to PARK."
+            ),
+        }
+        return not task_received
+
+    def _return_to_wait_point(self, execution_id: str, workflow_result: Dict[str, Any]) -> None:
+        if workflow_result.get("status") != "ok":
+            return
+        with self.lock:
+            execution = dict(self.executions.get(execution_id, {}))
+        runtime_id = str(execution.get("runtime_id") or self.context.get("runtime_id") or "real").lower()
+        workflow_type = str(execution.get("workflow_type") or "").upper()
+        if runtime_id != "real" or execution.get("is_auto_charge") or workflow_type == "ROBOT_RETURN_AND_CHARGING":
+            return
+
+        def record_skip(message: str) -> None:
+            detail = {"status": "skipped", "message": message}
+            workflow_result["return_to_wait_point"] = detail
+            with self.lock:
+                current = self.executions.get(execution_id)
+                if current is not None:
+                    current["return_to_wait_point"] = detail
+                    current["last_error"] = message
+            print(f"Could not return to PARK: {message}", flush=True)
+
+        if self._is_cancelled(execution_id) or self._is_low_battery_preempt_requested(execution_id):
+            record_skip("Return was preempted by cancellation or low-battery handling.")
+            return
+
+        get_park_endpoint = getattr(self.runtime_gateway, "get_park_endpoint", None)
+        if not callable(get_park_endpoint):
+            record_skip("Runtime gateway cannot resolve a PARK point.")
+            return
+        try:
+            target = get_park_endpoint()
+        except Exception as exc:
+            record_skip(str(exc))
+            return
+
+        if self._is_cancelled(execution_id) or self._is_low_battery_preempt_requested(execution_id):
+            record_skip("Return was preempted by cancellation or low-battery handling.")
+            return
+
+        step_def = {
+            "id": "__return_to_wait_point",
+            "name": "Return to PARK",
+            "type": "MOVE",
+            "params": {
+                "target": {key: target[key] for key in ("x", "y", "theta", "endpoint_id")},
+                "speed_mode": "NORMAL",
+                "obstacle_policy": "WAIT_RESUME",
+                "timeout_sec": 180,
+            },
+        }
+        self._set_current_step(execution_id, step_def)
+        try:
+            step_result = self.execute_step(step_def)
+        except Exception as exc:
+            now = datetime.now(timezone.utc).isoformat()
+            step_result = {
+                "step_id": step_def["id"],
+                "type": "MOVE",
+                "status": "FAILED",
+                "data": {"status": "error", "message": str(exc)},
+                "error": str(exc),
+                "attempt": 1,
+                "started_at": now,
+                "finished_at": now,
+                "engine_status": "ok",
+                "step": step_def["name"],
+                "step_type": "MOVE",
+                "result": {"status": "error", "message": str(exc)},
+            }
+
+        succeeded = self._step_succeeded(step_result, step_def)
+        step_detail = step_result.get("result", {})
+        error = None if succeeded else str(
+            step_detail.get("message") or step_detail.get("error") or "Could not reach the PARK point."
+        )
+        detail = {
+            "status": "completed" if succeeded else "failed",
+            "endpoint_name": target["name"],
+            "endpoint_id": target["endpoint_id"],
+            "message": error,
+            "result": step_detail,
+        }
+        workflow_result["return_to_wait_point"] = detail
+        workflow_result.setdefault("results", []).append(step_result)
+        workflow_result["requested_count"] = int(workflow_result.get("requested_count", 0)) + 1
+        workflow_result["completed_count"] = int(workflow_result.get("completed_count", 0)) + 1
+        with self.lock:
+            current = self.executions.get(execution_id)
+            if current is not None:
+                current["return_to_wait_point"] = detail
+                current["last_result"] = step_detail
+                current["last_error"] = error
+        self._publish_execution(
+            execution_id,
+            "STEP_COMPLETED" if succeeded else "STEP_FAILED",
+            result=step_detail,
+            error=error,
+        )
 
     def _set_current_step(self, execution_id: str, step_def: Dict[str, Any]) -> None:
         step_type = str(step_def.get("type", "WAIT")).upper()
@@ -415,9 +637,9 @@ class WorkflowEngine:
             execution = dict(self.executions.get(execution_id, {}))
         if result is None:
             result = execution.get("last_result")
-        mission_id = execution.get("mission_id") or execution.get("task_id")
+        job_id = execution.get("job_id") or execution.get("task_id")
         base_url = str(os.getenv("LIBOT_BACKEND_URL") or self.context.get("backend_base_url") or "").strip().rstrip("/")
-        if not base_url or not mission_id:
+        if not base_url or not job_id:
             return
         if error is None:
             error = execution.get("last_error")
@@ -435,7 +657,7 @@ class WorkflowEngine:
             "error": error,
         }).encode("utf-8")
         callback = request.Request(
-            f"{base_url}/api/missions/{mission_id}/execution/events/state",
+            f"{base_url}/api/jobs/{job_id}/execution/events/state",
             data=body,
             method="POST",
             headers={"Content-Type": "application/json"},
@@ -446,19 +668,20 @@ class WorkflowEngine:
         except OSError as exc:
             self.context.update_metadata(execution_callback_error=str(exc))
 
-    def _report_completion(self, mission_id: Any, execution_id: str, result: Dict[str, Any]) -> None:
+    def _report_completion(self, job_id: Any, execution_id: str, result: Dict[str, Any]) -> bool:
         base_url = str(
             os.getenv("LIBOT_BACKEND_URL") or self.context.get("backend_base_url") or ""
         ).strip().rstrip("/")
-        if not base_url or not mission_id:
-            return
+        if not base_url or not job_id:
+            return False
         body = json.dumps({
             "status": "CANCELLED" if result.get("status") == "cancelled" else "SUCCEEDED" if result.get("status") == "ok" else "FAILED",
             "executionId": execution_id,
-            "message": result.get("error") or result.get("failed_step"),
+            "message": result.get("error") or result.get("failed_step")
+                or (result.get("return_to_wait_point") or {}).get("message"),
         }).encode("utf-8")
         callback = request.Request(
-            f"{base_url}/api/missions/{mission_id}/execution/completed",
+            f"{base_url}/api/jobs/{job_id}/execution/completed",
             data=body,
             method="POST",
             headers={"Content-Type": "application/json"},
@@ -466,8 +689,10 @@ class WorkflowEngine:
         try:
             with request.urlopen(callback, timeout=10):
                 pass
+            return True
         except OSError as exc:
             self.context.update_metadata(completion_callback_error=str(exc))
+            return False
 
     def _is_cancelled(self, execution_id: str) -> bool:
         with self.lock:
@@ -536,6 +761,7 @@ class WorkflowEngine:
         require_hardware: bool,
         allow_active_workflow: bool = False,
         require_robot_ui: bool = True,
+        require_patrol_detector: bool = False,
     ) -> Dict[str, Any]:
         runtime_id = str(os.getenv("LIBOT_RUNTIME_ID") or self.settings.get("runtime", {}).get("id", "real")).lower()
         checks: Dict[str, Any] = {"runtime_id": runtime_id}
@@ -567,6 +793,14 @@ class WorkflowEngine:
             checks["scanner"] = scanner_check
             if scanner_check.get("status") != "ready":
                 return self._error(scanner_check.get("message", "IMX500 camera is unavailable."), "PREFLIGHT_FAILED", checks=checks)
+            if require_patrol_detector:
+                detector_check = BarcodeScanner(scanner).patrol_status()
+                checks["patrol_detector"] = detector_check
+                if detector_check.get("status") != "ready":
+                    return self._error(
+                        detector_check.get("message", "Patrol leaning-book detector is unavailable."),
+                        "PREFLIGHT_FAILED", checks=checks,
+                    )
             if require_robot_ui:
                 ui = hardware.get("ui", {})
                 if not ui.get("enabled", False) or str(ui.get("driver", "tkinter")).lower() != "tkinter":
@@ -600,13 +834,27 @@ class WorkflowEngine:
         initial_context = request.get("initial_context", {})
         if not isinstance(initial_context, dict):
             return self._error("initial_context must be an object.")
+        workflow_type = str(
+            request.get("workflow_type") or initial_context.get("workflow_type") or ""
+        ).upper()
         runtime_id = str(request.get("runtime_id", "")).lower()
         if allow_safe_queue and runtime_id != "real":
             return self._error("Automatic charging is available only for the real runtime.")
+        if runtime_id == "real" and str(request.get("workflow_type", "")).upper() == "LIBRARY_PATROL":
+            scanner = self.settings.get("hardware", {}).get("scanner", {})
+            detector_check = BarcodeScanner(scanner).patrol_status()
+            if detector_check.get("status") != "ready":
+                return self._error(
+                    detector_check.get("message", "LIBRARY_PATROL requires an available IMX500 leaning-book detector."),
+                    "PREFLIGHT_FAILED",
+                )
         execution_id = str(request.get("execution_id") or uuid.uuid4())
 
         queued = False
         with self.lock:
+            for idle_wait_event in self._idle_wait_events.values():
+                idle_wait_event.set()
+
             active = next(
                 ((active_id, item) for active_id, item in self.executions.items()
                  if item.get("status") in {"accepted", "running"}),
@@ -624,7 +872,7 @@ class WorkflowEngine:
                 self.executions[execution_id] = {
                     "status": "queued",
                     "task_id": request.get("task_id"),
-                    "mission_id": request.get("mission_id", request.get("task_id")),
+                    "job_id": request.get("job_id", request.get("task_id")),
                     "runtime_id": runtime_id,
                     "is_auto_charge": True,
                 }
@@ -640,8 +888,9 @@ class WorkflowEngine:
                 self.executions[execution_id] = {
                     "status": "accepted",
                     "task_id": request.get("task_id"),
-                    "mission_id": request.get("mission_id", request.get("task_id")),
+                    "job_id": request.get("job_id", request.get("task_id")),
                     "runtime_id": request.get("runtime_id", self.context.get("runtime_id")),
+                    "workflow_type": workflow_type,
                     "assigned_book_id": initial_context.get("book_id"),
                     "current_step": None,
                     "current_step_name": None,
@@ -686,6 +935,7 @@ class WorkflowEngine:
                 bool(request.get("require_hardware", False)),
                 allow_active_workflow=bool(request.get("allow_active_workflow", False)),
                 require_robot_ui=bool(request.get("require_robot_ui", True)),
+                require_patrol_detector=bool(request.get("require_patrol_detector", False)),
             )
 
         if command == "cancel_workflow":
@@ -922,6 +1172,13 @@ class WorkflowEngine:
         step_type = str(enriched.get("type", "WAIT")).upper()
         hardware = self.settings.get("hardware", {})
 
+        if (enriched.get("_inventory_shelf_scan")
+                or enriched.get("movement_mode") == "SHELF_SCAN"):
+            enriched["_inventory_shelf_scan"] = True
+            enriched["_inventory_scan_settings"] = hardware.get("inventory_scan", {})
+            enriched["backend_base_url"] = (self.settings.get("backend", {}).get("base_url")
+                                             or self.settings.get("runtime", {}).get("backend_url"))
+
         if step_type == "SCAN":
             scanner = hardware.get("scanner", {})
             runtime_id = str(self.context.get("runtime_id") or os.getenv("LIBOT_RUNTIME_ID")
@@ -933,6 +1190,13 @@ class WorkflowEngine:
             else:
                 enriched.setdefault("device", scanner.get("device", enriched.get("sensor", "camera")))
             enriched.setdefault("timeout_sec", scanner.get("timeout_sec", 5))
+
+        if step_type == "MOVE" and enriched.get("scan_while_moving"):
+            scanner = hardware.get("scanner", {})
+            enriched["_patrol_detector"] = {
+                "device": scanner.get("device"),
+                "threshold": scanner.get("patrol_threshold", 0.70),
+            }
 
         if step_type == "WAIT":
             motion_safety = hardware.get("motion_safety")

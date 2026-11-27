@@ -6,6 +6,7 @@ import math
 import os
 from typing import Any, Dict, Optional
 from urllib import parse, request
+from urllib.error import HTTPError
 
 from core.context import RobotContext
 from steps.base_step import BaseStep
@@ -106,7 +107,7 @@ class ProcessDataStep(BaseStep):
                     f"{base_url}/api/workflow-data/inventory/scan",
                     method="POST",
                     body={
-                        "missionId": payload.get("mission_id") or context.get("mission_id"),
+                        "jobId": payload.get("job_id") or context.get("job_id"),
                         "runtimeId": payload.get("runtime_id") or runtime_id,
                         "barcode": payload.get("barcode"),
                         "shelfCode": payload.get("shelf_code"),
@@ -118,7 +119,7 @@ class ProcessDataStep(BaseStep):
                     f"{base_url}/api/workflow-data/inventory/reports",
                     method="POST",
                     body={
-                        "missionId": payload.get("mission_id") or context.get("mission_id"),
+                        "jobId": payload.get("job_id") or context.get("job_id"),
                         "runtimeId": payload.get("runtime_id") or runtime_id,
                         "shelfCode": payload.get("shelf_code"),
                         "scopeType": payload.get("scope_type", "SHELF"),
@@ -141,7 +142,7 @@ class ProcessDataStep(BaseStep):
                     f"{base_url}/api/workflow-data/patrol/observations",
                     method="POST",
                     body={
-                        "missionId": payload.get("mission_id") or context.get("mission_id"),
+                        "jobId": payload.get("job_id") or context.get("job_id"),
                         "runtimeId": payload.get("runtime_id") or runtime_id,
                         "observation": payload.get("observation"),
                     },
@@ -152,7 +153,7 @@ class ProcessDataStep(BaseStep):
                     f"{base_url}/api/workflow-data/patrol/reports",
                     method="POST",
                     body={
-                        "missionId": payload.get("mission_id") or context.get("mission_id"),
+                        "jobId": payload.get("job_id") or context.get("job_id"),
                         "runtimeId": payload.get("runtime_id") or runtime_id,
                     },
                 )
@@ -169,7 +170,7 @@ class ProcessDataStep(BaseStep):
                     f"{base_url}/api/workflow-data/patrol/actions",
                     method="POST",
                     body={
-                        "missionId": action_payload.get("mission_id") or context.get("mission_id"),
+                        "jobId": action_payload.get("job_id") or context.get("job_id"),
                         "runtimeId": action_payload.get("runtime_id") or runtime_id,
                         "action": self.operation,
                         "payload": action_payload,
@@ -201,8 +202,17 @@ class ProcessDataStep(BaseStep):
         http_request.add_header("Accept", "application/json")
         if payload is not None:
             http_request.add_header("Content-Type", "application/json")
-        with request.urlopen(http_request, timeout=self.timeout_sec) as response:
-            return json.loads(response.read().decode("utf-8"))
+        try:
+            with request.urlopen(http_request, timeout=self.timeout_sec) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            response_body = exc.read().decode("utf-8", errors="replace")
+            try:
+                error_payload = json.loads(response_body)
+            except json.JSONDecodeError:
+                error_payload = {}
+            detail = error_payload.get("message") or error_payload.get("detail") or response_body.strip()
+            raise ValueError(f"Backend returned HTTP {exc.code}: {detail or exc.reason}") from exc
 
     def _require_base_url(self, base_url: str) -> None:
         if not base_url:
@@ -212,8 +222,8 @@ class ProcessDataStep(BaseStep):
         canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         fingerprint = hashlib.sha256(canonical_payload.encode("utf-8")).hexdigest()
         execution_id = str(context.get("execution_id") or "legacy")
-        mission_id = str(context.get("mission_id") or "mission")
-        return f"{mission_id}:{execution_id}:{self.operation}:{fingerprint}"
+        job_id = str(context.get("job_id") or "job")
+        return f"{job_id}:{execution_id}:{self.operation}:{fingerprint}"
 
     def _resolve_backend_base_url(self, context: RobotContext) -> str:
         # The API request host may be `localhost`, which refers to the robot

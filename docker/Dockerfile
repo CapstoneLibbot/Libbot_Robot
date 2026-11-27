@@ -2,6 +2,9 @@ FROM ros:jazzy-ros-base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Pin the upstream driver so image rebuilds use a known compatible source.
+ARG SLLIDAR_ROS2_REF=34300099fadfc772965962dec837bf436706188f
+
 SHELL ["/bin/bash", "-c"]
 
 RUN find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) \
@@ -42,9 +45,16 @@ COPY ros2_ws/src /ros2_ws/src
 COPY robot_app /ros2_ws/robot_app
 COPY code /ros2_ws/code
 
+# Keep this outside /ros2_ws/src because Compose bind-mounts that directory.
+RUN mkdir -p /ros2_ws/dependencies/sllidar_ros2 && \
+    git init /ros2_ws/dependencies/sllidar_ros2 && \
+    git -C /ros2_ws/dependencies/sllidar_ros2 remote add origin https://github.com/Slamtec/sllidar_ros2.git && \
+    git -C /ros2_ws/dependencies/sllidar_ros2 fetch --depth 1 origin "${SLLIDAR_ROS2_REF}" && \
+    git -C /ros2_ws/dependencies/sllidar_ros2 checkout --detach FETCH_HEAD
+
 RUN . /opt/ros/jazzy/setup.bash && \
     cd /ros2_ws && \
-    colcon build --symlink-install
+    colcon build --symlink-install --base-paths src dependencies/sllidar_ros2
 
 COPY docker/entrypoint.sh /entrypoint.sh
 

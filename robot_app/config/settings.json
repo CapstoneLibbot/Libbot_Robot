@@ -20,10 +20,19 @@
       "enabled": true,
       "driver": "ros"
     },
+    "inventory_scan": {
+      "speed_mps": 0.5,
+      "min_speed_mps": 0.04,
+      "min_angular_speed_radps": 0.08,
+      "lateral_tolerance_m": 0.04,
+      "heading_tolerance_rad": 0.15,
+      "segment_timeout_sec": 20
+    },
     "scanner": {
       "enabled": true,
       "device": "imx500-tcp://127.0.0.1:9011",
-      "timeout_sec": 5
+      "timeout_sec": 5,
+      "patrol_threshold": 0.70
     },
     "motion_safety": {
       "enabled": true,
