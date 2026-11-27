@@ -845,7 +845,7 @@ class WorkflowEngine:
             detector_check = BarcodeScanner(scanner).patrol_status()
             if detector_check.get("status") != "ready":
                 return self._error(
-                    detector_check.get("message", "LIBRARY_PATROL requires an available IMX500 leaning-book detector."),
+                    detector_check.get("message", "LIBRARY_PATROL requires an available Roboflow detector."),
                     "PREFLIGHT_FAILED",
                 )
         execution_id = str(request.get("execution_id") or uuid.uuid4())

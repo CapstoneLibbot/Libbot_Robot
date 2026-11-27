@@ -89,6 +89,7 @@ class PatrolDetectionReporter:
                     "pathId": self.path_id,
                     "observationId": detection.get("observation_id"),
                     "confidence": detection.get("confidence"),
+                    "tiltDegrees": detection.get("tilt_degrees"),
                     "observedAtUtc": detection.get("observed_at_utc"),
                     "waypoint": self.waypoint,
                     "imageBase64": detection.get("image_base64"),
